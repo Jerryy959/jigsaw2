@@ -12,6 +12,9 @@ function bootstrap() {
     }
     const book = new OrderBook(3856, 0.25, 160);
     const mine = new MyOrderManager(book);
+    let orderSize = 1;
+    let panelDirty = true;
+    let lastOrdersVersion = -1;
     const showFillToast = (fill) => {
         const item = document.createElement('div');
         item.className = 'toast';
@@ -44,14 +47,27 @@ function bootstrap() {
         })
             .join('');
         ordersPanel.innerHTML = `
-      <div class="orders-title">我的挂单 (${orders.length})</div>
+      <div class="orders-title-row">
+        <div class="orders-title">我的挂单 (${orders.length})</div>
+        <div class="size-control">
+          <span>下单手数</span>
+          <button class="size-btn" data-step="-1">-</button>
+          <span class="size-value">${orderSize}</span>
+          <button class="size-btn" data-step="1">+</button>
+        </div>
+      </div>
       <div class="orders-body">${rows || '<div class="order-empty">暂无挂单</div>'}</div>
     `;
+        panelDirty = false;
+        lastOrdersVersion = mine.getVersion();
     };
     const applyEvent = (event) => {
         book.applyEvent(event);
         const fills = mine.onBookEvent(event);
         fills.forEach(showFillToast);
+        if (mine.getVersion() !== lastOrdersVersion) {
+            panelDirty = true;
+        }
     };
     const matcher = new MockMatchingEngine(book, mine, (fillEvent) => {
         applyEvent(fillEvent);
@@ -72,10 +88,18 @@ function bootstrap() {
             size: cancelled.remaining,
             timestamp: Date.now(),
         });
-        renderOrdersPanel();
+        panelDirty = true;
     };
     ordersPanel.addEventListener('click', (ev) => {
+        ev.stopPropagation();
         const target = ev.target;
+        const sizeBtn = target.closest('.size-btn');
+        if (sizeBtn) {
+            const step = Number(sizeBtn.dataset.step || '0');
+            orderSize = Math.max(1, Math.min(100, orderSize + step));
+            panelDirty = true;
+            return;
+        }
         const btn = target.closest('.cancel-btn');
         if (!btn) {
             return;
@@ -91,14 +115,13 @@ function bootstrap() {
             const cancelled = mine.cancelTopOrderAt(price, side);
             if (cancelled) {
                 applyEvent({ type: 'cancel', side, price, size: cancelled.remaining, timestamp: Date.now() });
+                panelDirty = true;
             }
-            renderOrdersPanel();
             return;
         }
-        const size = 8 + Math.floor(Math.random() * 18);
-        mine.placeOrder(side, price, size);
-        applyEvent({ type: 'add', side, price, size, timestamp: Date.now() });
-        renderOrdersPanel();
+        mine.placeOrder(side, price, orderSize);
+        applyEvent({ type: 'add', side, price, size: orderSize, timestamp: Date.now() });
+        panelDirty = true;
     });
     renderer.init();
     const mock = new MockDataGenerator(book, 70, onMarketEvent, {
@@ -110,7 +133,9 @@ function bootstrap() {
     mock.start();
     const loop = () => {
         renderer.render();
-        renderOrdersPanel();
+        if (panelDirty) {
+            renderOrdersPanel();
+        }
         requestAnimationFrame(loop);
     };
     loop();

@@ -17,6 +17,10 @@ function bootstrap(): void {
   const book = new OrderBook(3856, 0.25, 160);
   const mine = new MyOrderManager(book);
 
+  let orderSize = 1;
+  let panelDirty = true;
+  let lastOrdersVersion = -1;
+
   const showFillToast = (fill: FillNotice): void => {
     const item = document.createElement('div');
     item.className = 'toast';
@@ -51,15 +55,29 @@ function bootstrap(): void {
       .join('');
 
     ordersPanel.innerHTML = `
-      <div class="orders-title">我的挂单 (${orders.length})</div>
+      <div class="orders-title-row">
+        <div class="orders-title">我的挂单 (${orders.length})</div>
+        <div class="size-control">
+          <span>下单手数</span>
+          <button class="size-btn" data-step="-1">-</button>
+          <span class="size-value">${orderSize}</span>
+          <button class="size-btn" data-step="1">+</button>
+        </div>
+      </div>
       <div class="orders-body">${rows || '<div class="order-empty">暂无挂单</div>'}</div>
     `;
+
+    panelDirty = false;
+    lastOrdersVersion = mine.getVersion();
   };
 
   const applyEvent = (event: BookEvent): void => {
     book.applyEvent(event);
     const fills = mine.onBookEvent(event);
     fills.forEach(showFillToast);
+    if (mine.getVersion() !== lastOrdersVersion) {
+      panelDirty = true;
+    }
   };
 
   const matcher = new MockMatchingEngine(book, mine, (fillEvent: BookEvent) => {
@@ -83,11 +101,21 @@ function bootstrap(): void {
       size: cancelled.remaining,
       timestamp: Date.now(),
     });
-    renderOrdersPanel();
+    panelDirty = true;
   };
 
   ordersPanel.addEventListener('click', (ev: MouseEvent) => {
+    ev.stopPropagation();
     const target = ev.target as HTMLElement;
+
+    const sizeBtn = target.closest('.size-btn') as HTMLButtonElement | null;
+    if (sizeBtn) {
+      const step = Number(sizeBtn.dataset.step || '0');
+      orderSize = Math.max(1, Math.min(100, orderSize + step));
+      panelDirty = true;
+      return;
+    }
+
     const btn = target.closest('.cancel-btn') as HTMLButtonElement | null;
     if (!btn) {
       return;
@@ -104,15 +132,14 @@ function bootstrap(): void {
       const cancelled = mine.cancelTopOrderAt(price, side);
       if (cancelled) {
         applyEvent({ type: 'cancel', side, price, size: cancelled.remaining, timestamp: Date.now() });
+        panelDirty = true;
       }
-      renderOrdersPanel();
       return;
     }
 
-    const size = 8 + Math.floor(Math.random() * 18);
-    mine.placeOrder(side, price, size);
-    applyEvent({ type: 'add', side, price, size, timestamp: Date.now() });
-    renderOrdersPanel();
+    mine.placeOrder(side, price, orderSize);
+    applyEvent({ type: 'add', side, price, size: orderSize, timestamp: Date.now() });
+    panelDirty = true;
   });
   renderer.init();
 
@@ -126,7 +153,9 @@ function bootstrap(): void {
 
   const loop = (): void => {
     renderer.render();
-    renderOrdersPanel();
+    if (panelDirty) {
+      renderOrdersPanel();
+    }
     requestAnimationFrame(loop);
   };
   loop();
