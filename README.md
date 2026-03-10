@@ -33,5 +33,6 @@ python3 -m http.server 5173
 - `src/OrderBook.ts`：盘口档位 + 成交累计 + 动画高亮时间戳
 - `src/MyOrderManager.ts`：我的订单、撤单、queue ahead/remaining 更新
 - `src/MockDataGenerator.ts`：可配置权重的 add/cancel/trade 随机流
+- `src/MockMatchingEngine.ts`：模拟后端撮合服务（价格扫到挂单后按队列触发成交）
 - `src/DOMRenderer.ts`：WebGL 绘制 + Canvas 文本层 + 点击/滚轮交互
 - `src/main.ts`：启动、事件桥接、渲染循环
