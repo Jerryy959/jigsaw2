@@ -1,33 +1,42 @@
 export class DOMRenderer {
-    constructor(orderBook, myOrders, mountEl, onClick) {
+    constructor(orderBook, myOrders, mountEl, onClickOrder) {
         this.orderBook = orderBook;
         this.myOrders = myOrders;
         this.mountEl = mountEl;
-        this.onClick = onClick;
-        this.width = 860;
-        this.height = 1120;
-        this.rowH = 22;
-        this.top = 48;
+        this.onClickOrder = onClickOrder;
+        this.width = 900;
+        this.height = 1080;
+        this.rowH = 20;
+        this.top = 44;
+        this.visibleRows = 48;
         this.posLoc = -1;
         this.colorLoc = -1;
-        // jigsaw-like fixed columns
-        this.cBidBook = 0;
-        this.cBidPrint = 155;
-        this.cPrice = 250;
-        this.cAskPrint = 355;
-        this.cAskBook = 450;
+        this.scrollOffset = 0;
+        // Column order: bid book | bid footprint | price | ask footprint | ask book
+        this.colBidBook = 10;
+        this.colBidFoot = 195;
+        this.colPrice = 305;
+        this.colAskFoot = 415;
+        this.colAskBook = 525;
+        this.handleWheel = (ev) => {
+            ev.preventDefault();
+            this.scrollOffset += ev.deltaY > 0 ? 1 : -1;
+            this.scrollOffset = Math.max(-200, Math.min(200, this.scrollOffset));
+        };
         this.handleClick = (ev) => {
             const rect = this.uiCanvas.getBoundingClientRect();
             const x = ev.clientX - rect.left;
             const y = ev.clientY - rect.top;
-            const idx = Math.floor((y - this.top) / this.rowH);
-            const levels = this.orderBook.getSnapshot().levels;
-            if (idx < 0 || idx >= levels.length) {
+            const row = Math.floor((y - this.top) / this.rowH);
+            const snap = this.orderBook.getSnapshot();
+            const { windowLevels } = this.pickWindow(snap);
+            if (row < 0 || row >= windowLevels.length) {
                 return;
             }
-            const price = levels[idx].price;
-            const side = x < this.cPrice ? 'bid' : 'ask';
-            this.onClick(price, side);
+            const price = windowLevels[row].price;
+            const side = x < this.colPrice + 60 ? 'bid' : 'ask';
+            const hasMine = this.myOrders.getTopOrderAt(price, side);
+            this.onClickOrder(price, side, hasMine ? 'cancel' : 'place');
         };
     }
     init() {
@@ -48,93 +57,123 @@ export class DOMRenderer {
         const gl = this.glCanvas.getContext('webgl');
         const ctx = this.uiCanvas.getContext('2d');
         if (!gl || !ctx) {
-            throw new Error('no canvas context');
+            throw new Error('missing canvas context');
         }
         this.gl = gl;
         this.ctx = ctx;
         this.initGL();
         this.uiCanvas.addEventListener('click', this.handleClick);
+        this.uiCanvas.addEventListener('wheel', this.handleWheel, { passive: false });
     }
     render() {
         const snap = this.orderBook.getSnapshot();
+        const { windowLevels, anchorIndex } = this.pickWindow(snap);
+        const now = Date.now();
         const rects = [];
-        snap.levels.forEach((l, i) => {
+        windowLevels.forEach((l, i) => {
             const y = this.top + i * this.rowH;
             const bidRatio = l.bidSize / snap.maxBookSize;
             const askRatio = l.askSize / snap.maxBookSize;
-            const buyRatio = l.buyTraded / snap.maxTradeSize;
-            const sellRatio = l.sellTraded / snap.maxTradeSize;
-            // zebra rows
+            const buyTradeRatio = l.buyTraded / snap.maxTradeSize;
+            const sellTradeRatio = l.sellTraded / snap.maxTradeSize;
             if (i % 2 === 0) {
-                rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.02, g: 0.16, b: 0.2, a: 0.18 });
+                rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.03, g: 0.15, b: 0.2, a: 0.16 });
             }
-            // book bars left/right
-            rects.push({ x: this.cBidBook + (140 * (1 - bidRatio)), y: y + 1, w: 140 * bidRatio, h: this.rowH - 3, r: 0.22, g: 0.62, b: 0.95, a: 0.75 });
-            rects.push({ x: this.cAskBook, y: y + 1, w: 140 * askRatio, h: this.rowH - 3, r: 0.9, g: 0.35, b: 0.35, a: 0.75 });
-            // footprint columns around price
-            rects.push({ x: this.cBidPrint + (90 * (1 - sellRatio)), y: y + 1, w: 90 * sellRatio, h: this.rowH - 3, r: 0.15, g: 0.42, b: 0.78, a: 0.7 });
-            rects.push({ x: this.cAskPrint, y: y + 1, w: 90 * buyRatio, h: this.rowH - 3, r: 0.8, g: 0.25, b: 0.25, a: 0.7 });
-            // current spread highlight
-            if (l.price === snap.bestBid || l.price === snap.bestAsk) {
-                rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.93, g: 0.9, b: 0.2, a: 0.15 });
+            // current and +-2 rows highlighted across all columns (use cool tone, avoid yellow)
+            if (anchorIndex >= 0 && Math.abs(i - anchorIndex) <= 2) {
+                rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.22, g: 0.7, b: 0.78, a: i === anchorIndex ? 0.22 : 0.12 });
             }
-            const myBid = this.myOrders.getTopOrderAt(l.price, 'bid');
-            const myAsk = this.myOrders.getTopOrderAt(l.price, 'ask');
-            if (myBid) {
-                rects.push({ x: this.cBidBook - 4, y: y + 1, w: 4, h: this.rowH - 3, r: 1, g: 0.92, b: 0.35, a: 1 });
+            // bid/ask palette closer to jigsaw
+            rects.push({ x: this.colBidBook + 170 * (1 - bidRatio), y: y + 1, w: 170 * bidRatio, h: this.rowH - 2, r: 0.24, g: 0.55, b: 0.78, a: 0.86 });
+            rects.push({ x: this.colAskBook, y: y + 1, w: 170 * askRatio, h: this.rowH - 2, r: 0.78, g: 0.36, b: 0.33, a: 0.86 });
+            // footprint cumulative columns
+            rects.push({ x: this.colBidFoot + 100 * (1 - sellTradeRatio), y: y + 1, w: 100 * sellTradeRatio, h: this.rowH - 2, r: 0.2, g: 0.43, b: 0.68, a: 0.78 });
+            rects.push({ x: this.colAskFoot, y: y + 1, w: 100 * buyTradeRatio, h: this.rowH - 2, r: 0.69, g: 0.3, b: 0.31, a: 0.78 });
+            // taker flashes animation
+            if (l.bidFlashUntil > now) {
+                rects.push({ x: this.colBidBook, y: y + 1, w: 170, h: this.rowH - 2, r: 0.42, g: 0.82, b: 1, a: 0.28 });
             }
-            if (myAsk) {
-                rects.push({ x: this.cAskBook + 142, y: y + 1, w: 4, h: this.rowH - 3, r: 1, g: 0.92, b: 0.35, a: 1 });
+            if (l.askFlashUntil > now) {
+                rects.push({ x: this.colAskBook, y: y + 1, w: 170, h: this.rowH - 2, r: 1, g: 0.46, b: 0.46, a: 0.28 });
+            }
+            if (l.sellFlashUntil > now) {
+                rects.push({ x: this.colBidFoot, y: y + 1, w: 100, h: this.rowH - 2, r: 0.4, g: 0.72, b: 1, a: 0.22 });
+            }
+            if (l.buyFlashUntil > now) {
+                rects.push({ x: this.colAskFoot, y: y + 1, w: 100, h: this.rowH - 2, r: 1, g: 0.56, b: 0.56, a: 0.22 });
+            }
+            if (this.myOrders.getTopOrderAt(l.price, 'bid')) {
+                rects.push({ x: this.colBidBook - 5, y: y + 1, w: 5, h: this.rowH - 2, r: 1, g: 0.92, b: 0.3, a: 1 });
+            }
+            if (this.myOrders.getTopOrderAt(l.price, 'ask')) {
+                rects.push({ x: this.colAskBook + 172, y: y + 1, w: 5, h: this.rowH - 2, r: 1, g: 0.92, b: 0.3, a: 1 });
             }
         });
         this.drawRects(rects);
-        this.drawTexts(snap);
+        this.drawTexts(snap, windowLevels, anchorIndex);
     }
-    drawTexts(snap) {
+    pickWindow(snap) {
+        const total = snap.levels.length;
+        const currentIdx = snap.levels.findIndex((l) => l.price === snap.currentPrice);
+        const baseCenter = currentIdx < 0 ? Math.floor(total / 2) : currentIdx;
+        const center = Math.max(0, Math.min(total - 1, baseCenter + this.scrollOffset));
+        const half = Math.floor(this.visibleRows / 2);
+        const start = Math.max(0, Math.min(total - this.visibleRows, center - half));
+        const end = Math.min(total, start + this.visibleRows);
+        const windowLevels = snap.levels.slice(start, end);
+        // anchor current price to true market row; do not move current highlight with manual wheel scroll.
+        const anchorIndex = currentIdx < start || currentIdx >= end ? -1 : currentIdx - start;
+        return { windowLevels, anchorIndex };
+    }
+    drawTexts(snap, levels, anchorIndex) {
         const ctx = this.ctx;
         ctx.clearRect(0, 0, this.width, this.height);
-        ctx.fillStyle = '#1a2b38';
-        ctx.fillRect(0, 0, this.width, this.top - 4);
-        ctx.fillStyle = '#c9d8e4';
-        ctx.font = 'bold 13px sans-serif';
-        ctx.fillText('BID', this.cBidBook + 54, 26);
-        ctx.fillText('SELL x BUY', this.cBidPrint + 10, 26);
-        ctx.fillText('PRICE', this.cPrice + 22, 26);
-        ctx.fillText('ASK', this.cAskBook + 54, 26);
-        ctx.font = '18px sans-serif';
-        snap.levels.forEach((l, i) => {
-            const y = this.top + i * this.rowH + 17;
-            const delta = l.buyTraded - l.sellTraded;
+        ctx.fillStyle = '#202a34';
+        ctx.fillRect(0, 0, this.width, this.top - 2);
+        ctx.fillStyle = '#d5e3ee';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.fillText('BID BOOK', this.colBidBook + 45, 24);
+        ctx.fillText('SELL CUM', this.colBidFoot + 20, 24);
+        ctx.fillText('PRICE', this.colPrice + 33, 24);
+        ctx.fillText('BUY CUM', this.colAskFoot + 22, 24);
+        ctx.fillText('ASK BOOK', this.colAskBook + 45, 24);
+        ctx.font = '15px monospace';
+        levels.forEach((l, i) => {
+            const y = this.top + i * this.rowH + 15;
             const myBid = this.myOrders.getTopOrderAt(l.price, 'bid');
             const myAsk = this.myOrders.getTopOrderAt(l.price, 'ask');
-            ctx.fillStyle = '#d5ecf8';
-            ctx.fillText(Math.round(l.bidSize).toString(), this.cBidBook + 8, y);
-            ctx.fillStyle = '#e6f0f8';
-            ctx.fillText(Math.round(l.sellTraded).toString(), this.cBidPrint + 8, y);
-            ctx.fillStyle = '#f5f5f5';
-            ctx.fillText(l.price.toFixed(2), this.cPrice + 8, y);
-            ctx.fillStyle = '#f2dfe0';
-            ctx.fillText(Math.round(l.buyTraded).toString(), this.cAskPrint + 8, y);
-            ctx.fillStyle = '#f7dcde';
-            ctx.fillText(Math.round(l.askSize).toString(), this.cAskBook + 8, y);
-            ctx.font = '12px sans-serif';
+            ctx.fillStyle = '#d8ecfc';
+            ctx.fillText(Math.round(l.bidSize).toString(), this.colBidBook + 7, y);
+            ctx.fillStyle = '#c5dbf3';
+            ctx.fillText(Math.round(l.sellTraded).toString(), this.colBidFoot + 8, y);
+            ctx.fillStyle = i === anchorIndex ? '#b9f3ff' : '#e8ecef';
+            ctx.fillText(l.price.toFixed(2), this.colPrice + 10, y);
+            ctx.fillStyle = '#f7d4d4';
+            ctx.fillText(Math.round(l.buyTraded).toString(), this.colAskFoot + 8, y);
+            ctx.fillStyle = '#ffe2e2';
+            ctx.fillText(Math.round(l.askSize).toString(), this.colAskBook + 7, y);
+            ctx.font = '11px sans-serif';
             if (myBid) {
-                ctx.fillStyle = '#ffe66d';
-                ctx.fillText(`B#${Math.floor(myBid.aheadVolume) + 1}`, this.cBidBook + 92, y - 2);
+                ctx.fillStyle = '#ffeb7a';
+                ctx.fillText(`#${Math.floor(myBid.aheadVolume) + 1}`, this.colBidBook + 120, y - 2);
             }
             if (myAsk) {
-                ctx.fillStyle = '#ffe66d';
-                ctx.fillText(`A#${Math.floor(myAsk.aheadVolume) + 1}`, this.cAskBook + 92, y - 2);
+                ctx.fillStyle = '#ffeb7a';
+                ctx.fillText(`#${Math.floor(myAsk.aheadVolume) + 1}`, this.colAskBook + 120, y - 2);
             }
-            if (Math.abs(delta) > snap.maxTradeSize * 0.55) {
-                ctx.strokeStyle = '#ffd84f';
-                ctx.strokeRect(this.cPrice - 3, this.top + i * this.rowH + 1, 102, this.rowH - 3);
+            if (myBid || myAsk) {
+                // highlight row border once my order is resting on this price
+                ctx.strokeStyle = '#83fff2';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(1, this.top + i * this.rowH + 1, this.width - 2, this.rowH - 2);
             }
-            ctx.font = '18px sans-serif';
+            ctx.font = '15px monospace';
         });
+        ctx.fillStyle = '#93a9bb';
+        ctx.font = '11px sans-serif';
+        ctx.fillText(`current: ${snap.currentPrice.toFixed(2)}  bestBid: ${snap.bestBid.toFixed(2)}  bestAsk: ${snap.bestAsk.toFixed(2)}`, 10, this.height - 12);
     }
     drawRects(rects) {
-        const gl = this.gl;
         const data = [];
         const clipX = (x) => (x / this.width) * 2 - 1;
         const clipY = (y) => 1 - (y / this.height) * 2;
@@ -145,18 +184,18 @@ export class DOMRenderer {
             const y2 = clipY(r.y + r.h);
             data.push(x1, y1, r.r, r.g, r.b, r.a, x2, y1, r.r, r.g, r.b, r.a, x1, y2, r.r, r.g, r.b, r.a, x1, y2, r.r, r.g, r.b, r.a, x2, y1, r.r, r.g, r.b, r.a, x2, y2, r.r, r.g, r.b, r.a);
         }
-        gl.viewport(0, 0, this.width, this.height);
-        gl.clearColor(0.02, 0.14, 0.18, 1);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-        gl.useProgram(this.program);
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.DYNAMIC_DRAW);
+        this.gl.viewport(0, 0, this.width, this.height);
+        this.gl.clearColor(0.02, 0.11, 0.16, 1);
+        this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+        this.gl.useProgram(this.program);
+        this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.buffer);
+        this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(data), this.gl.DYNAMIC_DRAW);
         const stride = 6 * Float32Array.BYTES_PER_ELEMENT;
-        gl.enableVertexAttribArray(this.posLoc);
-        gl.vertexAttribPointer(this.posLoc, 2, gl.FLOAT, false, stride, 0);
-        gl.enableVertexAttribArray(this.colorLoc);
-        gl.vertexAttribPointer(this.colorLoc, 4, gl.FLOAT, false, stride, 2 * Float32Array.BYTES_PER_ELEMENT);
-        gl.drawArrays(gl.TRIANGLES, 0, data.length / 6);
+        this.gl.enableVertexAttribArray(this.posLoc);
+        this.gl.vertexAttribPointer(this.posLoc, 2, this.gl.FLOAT, false, stride, 0);
+        this.gl.enableVertexAttribArray(this.colorLoc);
+        this.gl.vertexAttribPointer(this.colorLoc, 4, this.gl.FLOAT, false, stride, 2 * Float32Array.BYTES_PER_ELEMENT);
+        this.gl.drawArrays(this.gl.TRIANGLES, 0, data.length / 6);
     }
     initGL() {
         const vert = `

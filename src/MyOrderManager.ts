@@ -21,25 +21,37 @@ export class MyOrderManager {
     return order;
   }
 
+  public cancelTopOrderAt(price: number, side: Side): MyOrder | undefined {
+    const top = this.getTopOrderAt(price, side);
+    if (!top) {
+      return undefined;
+    }
+    this.orders.delete(top.id);
+    return top;
+  }
+
   public onBookEvent(event: BookEvent): void {
     for (const order of this.orders.values()) {
       if (order.price !== event.price || order.remaining <= 0) {
         continue;
       }
 
-      const affectedByQueueChange = event.type === 'cancel' && event.side === order.side;
-      const affectedByTrade = event.type === 'trade' && ((order.side === 'bid' && event.side === 'ask') || (order.side === 'ask' && event.side === 'bid'));
+      const queueChange = event.type === 'cancel' && event.side === order.side;
+      const matchHappened =
+        event.type === 'trade' &&
+        ((order.side === 'bid' && event.side === 'ask') ||
+          (order.side === 'ask' && event.side === 'bid'));
 
-      if (!affectedByQueueChange && !affectedByTrade) {
+      if (!queueChange && !matchHappened) {
         continue;
       }
 
-      const reduce = Math.min(order.aheadVolume, event.size);
-      order.aheadVolume -= reduce;
+      const consumedAhead = Math.min(order.aheadVolume, event.size);
+      order.aheadVolume -= consumedAhead;
 
-      const remainingImpact = event.size - reduce;
-      if (remainingImpact > 0) {
-        order.remaining = Math.max(0, order.remaining - remainingImpact);
+      const impactOnMe = event.size - consumedAhead;
+      if (impactOnMe > 0) {
+        order.remaining = Math.max(0, order.remaining - impactOnMe);
       }
     }
 

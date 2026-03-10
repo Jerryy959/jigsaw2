@@ -1,12 +1,23 @@
-# Jigsaw-like DOM Prototype
+# TypeScript + WebGL Jigsaw-like DOM Prototype
 
-一个可直接在现代浏览器中运行的 TypeScript + WebGL 交易面板原型，目标是接近 Jigsaw 的 DOM 呈现方式：
+该原型按 Jigsaw DOM 的列逻辑组织（每行一个价格级别，支持高频刷新和滚动）：
 
-- 红蓝挂单柱（左右盘口深度）
-- Footprint（中间成交量列与 Delta 高亮）
-- 高频 Mock 订单流（增/撤/成交）
-- 我的挂单高亮与队列排名
-- 鼠标点击价格行下单模拟
+1. 左侧蓝色买单柱（Bid Book）
+2. 买方被动盘对应的卖方主动成交累计（SELL CUM）
+3. 中间价格列（当前价格高亮，且上下 2 行联动高亮）
+4. 卖方被动盘对应的买方主动成交累计（BUY CUM）
+5. 右侧红色卖单柱（Ask Book）
+
+## 支持功能
+
+- 红蓝挂单柱（数量越大柱越长）
+- Footprint 累计成交（买卖分列）
+- 主动成交高亮动画（200~500ms 闪烁）
+- 当前价格高亮 + 上下两行联动高亮
+- 鼠标点击下单/撤单（同价同侧已有我的挂单则撤单）
+- 我的挂单高亮 + 队列位置显示（#ahead+1）
+- 高频 Mock 数据（70ms，可 burst）
+- 鼠标滚轮上下滚动 price ladder
 
 ## 运行
 
@@ -17,10 +28,10 @@ python3 -m http.server 5173
 
 访问 <http://localhost:5173>
 
-## 模块
+## 代码模块
 
-- `src/OrderBook.ts`: 盘口状态 + 成交累计
-- `src/MockDataGenerator.ts`: 高频事件流（80ms，支持批量爆发）
-- `src/MyOrderManager.ts`: 我的订单与 queue ahead/remaining 更新
-- `src/DOMRenderer.ts`: WebGL 绘制柱图、热区，Canvas 文本层/点击交互
-- `src/main.ts`: 启动、连接模块、渲染循环
+- `src/OrderBook.ts`：盘口档位 + 成交累计 + 动画高亮时间戳
+- `src/MyOrderManager.ts`：我的订单、撤单、queue ahead/remaining 更新
+- `src/MockDataGenerator.ts`：可配置权重的 add/cancel/trade 随机流
+- `src/DOMRenderer.ts`：WebGL 绘制 + Canvas 文本层 + 点击/滚轮交互
+- `src/main.ts`：启动、事件桥接、渲染循环

@@ -1,8 +1,14 @@
 export class MockDataGenerator {
-    constructor(orderBook, intervalMs, onEvent) {
+    constructor(orderBook, intervalMs, onEvent, config = {
+        addWeight: 0.45,
+        cancelWeight: 0.25,
+        tradeWeight: 0.3,
+        burstChance: 0.25,
+    }) {
         this.orderBook = orderBook;
         this.intervalMs = intervalMs;
         this.onEvent = onEvent;
+        this.config = config;
         this.timer = null;
     }
     start() {
@@ -10,25 +16,36 @@ export class MockDataGenerator {
             return;
         }
         this.timer = window.setInterval(() => {
-            const batch = this.nextBatch();
-            for (const evt of batch) {
-                this.onEvent(evt);
+            const events = this.nextBatch();
+            for (const event of events) {
+                this.onEvent(event);
             }
         }, this.intervalMs);
     }
+    pickType() {
+        const total = this.config.addWeight + this.config.cancelWeight + this.config.tradeWeight;
+        const r = Math.random() * total;
+        if (r < this.config.addWeight) {
+            return 'add';
+        }
+        if (r < this.config.addWeight + this.config.cancelWeight) {
+            return 'cancel';
+        }
+        return 'trade';
+    }
     nextBatch() {
         const prices = this.orderBook.getPrices();
-        const count = Math.random() < 0.2 ? 3 : 1;
+        const center = Math.floor(prices.length / 2);
+        const count = Math.random() < this.config.burstChance ? 2 + Math.floor(Math.random() * 3) : 1;
         const out = [];
         for (let i = 0; i < count; i++) {
-            const nearCenter = Math.floor(prices.length * (0.35 + Math.random() * 0.3));
-            const noise = Math.floor(Math.random() * 12) - 6;
-            const idx = Math.max(0, Math.min(prices.length - 1, nearCenter + noise));
+            const distance = Math.floor((Math.random() - 0.5) * 16);
+            const idx = Math.max(0, Math.min(prices.length - 1, center + distance));
             const price = prices[idx];
             const side = Math.random() > 0.5 ? 'bid' : 'ask';
-            const roll = Math.random();
-            const size = Math.floor(Math.random() * 320) + 5;
-            const type = roll < 0.45 ? 'add' : roll < 0.75 ? 'cancel' : 'trade';
+            const type = this.pickType();
+            const base = type === 'trade' ? 200 : 140;
+            const size = 1 + Math.floor(Math.random() * base);
             out.push({ type, side, price, size, timestamp: Date.now() });
         }
         return out;

@@ -12,8 +12,12 @@ export interface BookLevel {
   price: number;
   bidSize: number;
   askSize: number;
-  buyTraded: number;
-  sellTraded: number;
+  buyTraded: number; // aggressive buy cumulative at this price
+  sellTraded: number; // aggressive sell cumulative at this price
+  buyFlashUntil: number;
+  sellFlashUntil: number;
+  bidFlashUntil: number;
+  askFlashUntil: number;
 }
 
 export interface MyOrder {
@@ -30,6 +34,14 @@ export interface DOMSnapshot {
   levels: BookLevel[];
   bestBid: number;
   bestAsk: number;
+  currentPrice: number;
   maxBookSize: number;
   maxTradeSize: number;
+}
+
+export interface MockConfig {
+  addWeight: number;
+  cancelWeight: number;
+  tradeWeight: number;
+  burstChance: number;
 }
