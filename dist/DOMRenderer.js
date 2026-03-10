@@ -79,17 +79,16 @@ export class DOMRenderer {
             if (i % 2 === 0) {
                 rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.03, g: 0.15, b: 0.2, a: 0.16 });
             }
-            // center and +-2 rows highlighted across all columns
-            if (Math.abs(i - anchorIndex) <= 2) {
-                rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.95, g: 0.9, b: 0.22, a: i === anchorIndex ? 0.2 : 0.1 });
+            // current and +-2 rows highlighted across all columns (use cool tone, avoid yellow)
+            if (anchorIndex >= 0 && Math.abs(i - anchorIndex) <= 2) {
+                rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.22, g: 0.7, b: 0.78, a: i === anchorIndex ? 0.22 : 0.12 });
             }
-            // bid book blue bar
-            rects.push({ x: this.colBidBook + 170 * (1 - bidRatio), y: y + 1, w: 170 * bidRatio, h: this.rowH - 2, r: 0.2, g: 0.56, b: 0.95, a: 0.8 });
-            // ask book red bar
-            rects.push({ x: this.colAskBook, y: y + 1, w: 170 * askRatio, h: this.rowH - 2, r: 0.9, g: 0.33, b: 0.33, a: 0.8 });
+            // bid/ask palette closer to jigsaw
+            rects.push({ x: this.colBidBook + 170 * (1 - bidRatio), y: y + 1, w: 170 * bidRatio, h: this.rowH - 2, r: 0.24, g: 0.55, b: 0.78, a: 0.86 });
+            rects.push({ x: this.colAskBook, y: y + 1, w: 170 * askRatio, h: this.rowH - 2, r: 0.78, g: 0.36, b: 0.33, a: 0.86 });
             // footprint cumulative columns
-            rects.push({ x: this.colBidFoot + 100 * (1 - sellTradeRatio), y: y + 1, w: 100 * sellTradeRatio, h: this.rowH - 2, r: 0.18, g: 0.45, b: 0.8, a: 0.72 });
-            rects.push({ x: this.colAskFoot, y: y + 1, w: 100 * buyTradeRatio, h: this.rowH - 2, r: 0.82, g: 0.3, b: 0.3, a: 0.72 });
+            rects.push({ x: this.colBidFoot + 100 * (1 - sellTradeRatio), y: y + 1, w: 100 * sellTradeRatio, h: this.rowH - 2, r: 0.2, g: 0.43, b: 0.68, a: 0.78 });
+            rects.push({ x: this.colAskFoot, y: y + 1, w: 100 * buyTradeRatio, h: this.rowH - 2, r: 0.69, g: 0.3, b: 0.31, a: 0.78 });
             // taker flashes animation
             if (l.bidFlashUntil > now) {
                 rects.push({ x: this.colBidBook, y: y + 1, w: 170, h: this.rowH - 2, r: 0.42, g: 0.82, b: 1, a: 0.28 });
@@ -122,7 +121,8 @@ export class DOMRenderer {
         const start = Math.max(0, Math.min(total - this.visibleRows, center - half));
         const end = Math.min(total, start + this.visibleRows);
         const windowLevels = snap.levels.slice(start, end);
-        const anchorIndex = Math.max(0, Math.min(windowLevels.length - 1, center - start));
+        // anchor current price to true market row; do not move current highlight with manual wheel scroll.
+        const anchorIndex = currentIdx < start || currentIdx >= end ? -1 : currentIdx - start;
         return { windowLevels, anchorIndex };
     }
     drawTexts(snap, levels, anchorIndex) {
@@ -146,7 +146,7 @@ export class DOMRenderer {
             ctx.fillText(Math.round(l.bidSize).toString(), this.colBidBook + 7, y);
             ctx.fillStyle = '#c5dbf3';
             ctx.fillText(Math.round(l.sellTraded).toString(), this.colBidFoot + 8, y);
-            ctx.fillStyle = i === anchorIndex ? '#fff57f' : '#f0f3f6';
+            ctx.fillStyle = i === anchorIndex ? '#b9f3ff' : '#e8ecef';
             ctx.fillText(l.price.toFixed(2), this.colPrice + 10, y);
             ctx.fillStyle = '#f7d4d4';
             ctx.fillText(Math.round(l.buyTraded).toString(), this.colAskFoot + 8, y);
@@ -160,6 +160,12 @@ export class DOMRenderer {
             if (myAsk) {
                 ctx.fillStyle = '#ffeb7a';
                 ctx.fillText(`#${Math.floor(myAsk.aheadVolume) + 1}`, this.colAskBook + 120, y - 2);
+            }
+            if (myBid || myAsk) {
+                // highlight row border once my order is resting on this price
+                ctx.strokeStyle = '#83fff2';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(1, this.top + i * this.rowH + 1, this.width - 2, this.rowH - 2);
             }
             ctx.font = '15px monospace';
         });
