@@ -1,5 +1,5 @@
 import { OrderBook } from './OrderBook.js';
-import type { BookEvent, MyOrder, Side } from './types.js';
+import type { BookEvent, FillNotice, MyOrder, Side } from './types.js';
 
 export class MyOrderManager {
   private readonly orders = new Map<string, MyOrder>();
@@ -30,7 +30,18 @@ export class MyOrderManager {
     return top;
   }
 
-  public onBookEvent(event: BookEvent): void {
+  public cancelById(orderId: string): MyOrder | undefined {
+    const order = this.orders.get(orderId);
+    if (!order) {
+      return undefined;
+    }
+    this.orders.delete(orderId);
+    return order;
+  }
+
+  public onBookEvent(event: BookEvent): FillNotice[] {
+    const fills: FillNotice[] = [];
+
     for (const order of this.orders.values()) {
       if (order.price !== event.price || order.remaining <= 0) {
         continue;
@@ -51,7 +62,15 @@ export class MyOrderManager {
 
       const impactOnMe = event.size - consumedAhead;
       if (impactOnMe > 0) {
+        const filled = Math.min(order.remaining, impactOnMe);
         order.remaining = Math.max(0, order.remaining - impactOnMe);
+        fills.push({
+          orderId: order.id,
+          side: order.side,
+          price: order.price,
+          fillSize: filled,
+          remaining: order.remaining,
+        });
       }
     }
 
@@ -60,6 +79,8 @@ export class MyOrderManager {
         this.orders.delete(id);
       }
     }
+
+    return fills;
   }
 
   public getOrders(): MyOrder[] {

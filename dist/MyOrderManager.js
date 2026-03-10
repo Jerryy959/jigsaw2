@@ -25,7 +25,16 @@ export class MyOrderManager {
         this.orders.delete(top.id);
         return top;
     }
+    cancelById(orderId) {
+        const order = this.orders.get(orderId);
+        if (!order) {
+            return undefined;
+        }
+        this.orders.delete(orderId);
+        return order;
+    }
     onBookEvent(event) {
+        const fills = [];
         for (const order of this.orders.values()) {
             if (order.price !== event.price || order.remaining <= 0) {
                 continue;
@@ -41,7 +50,15 @@ export class MyOrderManager {
             order.aheadVolume -= consumedAhead;
             const impactOnMe = event.size - consumedAhead;
             if (impactOnMe > 0) {
+                const filled = Math.min(order.remaining, impactOnMe);
                 order.remaining = Math.max(0, order.remaining - impactOnMe);
+                fills.push({
+                    orderId: order.id,
+                    side: order.side,
+                    price: order.price,
+                    fillSize: filled,
+                    remaining: order.remaining,
+                });
             }
         }
         for (const [id, order] of this.orders.entries()) {
@@ -49,6 +66,7 @@ export class MyOrderManager {
                 this.orders.delete(id);
             }
         }
+        return fills;
     }
     getOrders() {
         return [...this.orders.values()].sort((a, b) => a.createdAt - b.createdAt);

@@ -30,6 +30,14 @@ export interface MyOrder {
   createdAt: number;
 }
 
+export interface FillNotice {
+  orderId: string;
+  side: Side;
+  price: number;
+  fillSize: number;
+  remaining: number;
+}
+
 export interface DOMSnapshot {
   levels: BookLevel[];
   bestBid: number;

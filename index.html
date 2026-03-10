@@ -11,7 +11,13 @@
       <h1>Jigsaw DOM 原型：Bid柱 | 卖累计 | 价格 | 买累计 | Ask柱</h1>
       <p>鼠标左/右侧点击价格行：下单或撤单（若已有本方挂单则撤单）；滚轮可上下滚动价格梯。</p>
     </div>
-    <div id="app"></div>
+
+    <div class="layout-wrap">
+      <div id="app"></div>
+      <aside id="orders-panel" class="orders-panel"></aside>
+    </div>
+
+    <div id="toast-root" class="toast-root"></div>
     <script type="module" src="./dist/main.js"></script>
   </body>
 </html>
