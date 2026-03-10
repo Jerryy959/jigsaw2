@@ -11,38 +11,35 @@ export class MockDataGenerator {
   ) {}
 
   public start(): void {
-    if (this.timer !== null) {
+    if (this.timer) {
       return;
     }
-
     this.timer = window.setInterval(() => {
-      const event = this.createEvent();
-      this.onEvent(event);
+      const batch = this.nextBatch();
+      for (const evt of batch) {
+        this.onEvent(evt);
+      }
     }, this.intervalMs);
   }
 
-  public stop(): void {
-    if (this.timer !== null) {
-      window.clearInterval(this.timer);
-      this.timer = null;
-    }
-  }
+  private nextBatch(): BookEvent[] {
+    const prices = this.orderBook.getPrices();
+    const count = Math.random() < 0.2 ? 3 : 1;
+    const out: BookEvent[] = [];
 
-  private createEvent(): BookEvent {
-    const prices = this.orderBook.getPriceRange();
-    const price = prices[Math.floor(Math.random() * prices.length)];
-    const side: Side = Math.random() > 0.5 ? 'bid' : 'ask';
-    const roll = Math.random();
-    const size = Math.floor(Math.random() * 18) + 1;
+    for (let i = 0; i < count; i++) {
+      const nearCenter = Math.floor(prices.length * (0.35 + Math.random() * 0.3));
+      const noise = Math.floor(Math.random() * 12) - 6;
+      const idx = Math.max(0, Math.min(prices.length - 1, nearCenter + noise));
+      const price = prices[idx];
+      const side: Side = Math.random() > 0.5 ? 'bid' : 'ask';
+      const roll = Math.random();
+      const size = Math.floor(Math.random() * 320) + 5;
 
-    if (roll < 0.45) {
-      return { type: 'add', side, price, size };
-    }
-
-    if (roll < 0.75) {
-      return { type: 'cancel', side, price, size };
+      const type: BookEvent['type'] = roll < 0.45 ? 'add' : roll < 0.75 ? 'cancel' : 'trade';
+      out.push({ type, side, price, size, timestamp: Date.now() });
     }
 
-    return { type: 'trade', side, price, size };
+    return out;
   }
 }

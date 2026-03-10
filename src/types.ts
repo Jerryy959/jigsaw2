@@ -1,37 +1,35 @@
 export type Side = 'bid' | 'ask';
 
-export interface LevelState {
+export interface BookEvent {
+  type: 'add' | 'cancel' | 'trade';
+  side: Side;
+  price: number;
+  size: number;
+  timestamp: number;
+}
+
+export interface BookLevel {
   price: number;
   bidSize: number;
   askSize: number;
-  buyVolume: number;
-  sellVolume: number;
+  buyTraded: number;
+  sellTraded: number;
 }
 
-export interface MyOrderState {
+export interface MyOrder {
   id: string;
   side: Side;
   price: number;
   size: number;
-  ahead: number;
+  remaining: number;
+  aheadVolume: number;
+  createdAt: number;
 }
 
-export type BookEvent =
-  | {
-      type: 'add';
-      side: Side;
-      price: number;
-      size: number;
-    }
-  | {
-      type: 'cancel';
-      side: Side;
-      price: number;
-      size: number;
-    }
-  | {
-      type: 'trade';
-      side: Side; // 主动打单方向，buy 表示吃 ask
-      price: number;
-      size: number;
-    };
+export interface DOMSnapshot {
+  levels: BookLevel[];
+  bestBid: number;
+  bestAsk: number;
+  maxBookSize: number;
+  maxTradeSize: number;
+}

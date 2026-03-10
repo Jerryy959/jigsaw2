@@ -10,27 +10,29 @@ function bootstrap(): void {
     throw new Error('Missing #app root element');
   }
 
-  const orderBook = new OrderBook(100, 1, 38);
-  const myOrders = new MyOrderManager(orderBook);
+  const book = new OrderBook(3856, 0.25, 66);
+  const mine = new MyOrderManager(book);
 
-  const renderer = new DOMRenderer(orderBook, myOrders, app, (price: number, side: Side) => {
-    const order = myOrders.placeOrder(side, price, 1);
-    const myAddEvent: BookEvent = { type: 'add', side, price, size: order.size };
-    orderBook.applyEvent(myAddEvent);
+  const onEvent = (event: BookEvent): void => {
+    book.applyEvent(event);
+    mine.onBookEvent(event);
+  };
+
+  const renderer = new DOMRenderer(book, mine, app, (price: number, side: Side) => {
+    const size = side === 'bid' ? 15 : 12;
+    mine.placeOrder(side, price, size);
+    onEvent({ type: 'add', side, price, size, timestamp: Date.now() });
   });
   renderer.init();
 
-  const stream = new MockDataGenerator(orderBook, 80, (event: BookEvent) => {
-    orderBook.applyEvent(event);
-    myOrders.onBookEvent(event);
-  });
-  stream.start();
+  const mock = new MockDataGenerator(book, 80, onEvent);
+  mock.start();
 
-  const renderLoop = (): void => {
+  const loop = (): void => {
     renderer.render();
-    window.requestAnimationFrame(renderLoop);
+    requestAnimationFrame(loop);
   };
-  renderLoop();
+  loop();
 }
 
 bootstrap();
