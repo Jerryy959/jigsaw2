@@ -100,6 +100,27 @@ body {
   margin-bottom: 8px;
 }
 
+
+.refresh-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid #2d3b46;
+  background: #111d27;
+  padding: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #a9becc;
+}
+
+.refresh-select {
+  border: 1px solid #425462;
+  background: #243340;
+  color: #d7e6ef;
+  font-size: 12px;
+  padding: 2px 4px;
+}
 .orders-body {
   display: flex;
   flex-direction: column;

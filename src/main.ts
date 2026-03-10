@@ -18,8 +18,10 @@ function bootstrap(): void {
   const mine = new MyOrderManager(book);
 
   let orderSize = 1;
+  let renderIntervalMs = 0; // 0 = realtime
   let panelDirty = true;
   let lastOrdersVersion = -1;
+  let lastRenderAt = 0;
 
   const showFillToast = (fill: FillNotice): void => {
     const item = document.createElement('div');
@@ -64,6 +66,17 @@ function bootstrap(): void {
           <button class="size-btn" data-step="1">+</button>
         </div>
       </div>
+      <div class="refresh-control">
+        <label for="refresh-mode">订单簿刷新</label>
+        <select id="refresh-mode" class="refresh-select">
+          <option value="0" ${renderIntervalMs === 0 ? 'selected' : ''}>实时</option>
+          <option value="50" ${renderIntervalMs === 50 ? 'selected' : ''}>50ms</option>
+          <option value="100" ${renderIntervalMs === 100 ? 'selected' : ''}>100ms</option>
+          <option value="200" ${renderIntervalMs === 200 ? 'selected' : ''}>200ms</option>
+          <option value="500" ${renderIntervalMs === 500 ? 'selected' : ''}>500ms</option>
+          <option value="1000" ${renderIntervalMs === 1000 ? 'selected' : ''}>1000ms</option>
+        </select>
+      </div>
       <div class="orders-body">${rows || '<div class="order-empty">暂无挂单</div>'}</div>
     `;
 
@@ -103,6 +116,16 @@ function bootstrap(): void {
     });
     panelDirty = true;
   };
+
+  ordersPanel.addEventListener('change', (ev: Event) => {
+    const target = ev.target as HTMLElement;
+    const select = target.closest('.refresh-select') as HTMLSelectElement | null;
+    if (!select) {
+      return;
+    }
+    renderIntervalMs = Number(select.value);
+    panelDirty = true;
+  });
 
   ordersPanel.addEventListener('click', (ev: MouseEvent) => {
     ev.stopPropagation();
@@ -152,7 +175,13 @@ function bootstrap(): void {
   mock.start();
 
   const loop = (): void => {
-    renderer.render();
+    const now = performance.now();
+    const shouldRenderBook = renderIntervalMs === 0 || now - lastRenderAt >= renderIntervalMs;
+    if (shouldRenderBook) {
+      renderer.render();
+      lastRenderAt = now;
+    }
+
     if (panelDirty) {
       renderOrdersPanel();
     }
