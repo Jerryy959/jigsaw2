@@ -11,7 +11,9 @@ function bootstrap() {
     if (!app || !ordersPanel || !toastRoot) {
         throw new Error('Missing root nodes');
     }
-    const book = new OrderBook(3856, 0.25, 160);
+    const sourceMode = new URLSearchParams(window.location.search).get('source') ?? 'mock';
+    const randomSeededLiquidity = sourceMode !== 'binance';
+    const book = new OrderBook(3856, 0.25, 160, randomSeededLiquidity);
     const mine = new MyOrderManager(book);
     let orderSize = 1;
     let renderIntervalMs = 0; // 0 = realtime
@@ -147,7 +149,6 @@ function bootstrap() {
         panelDirty = true;
     });
     renderer.init();
-    const sourceMode = new URLSearchParams(window.location.search).get('source') ?? 'mock';
     const marketDataSource = sourceMode === 'binance'
         ? new BinanceMarketDataSource(book, onMarketEvent, {
             symbol: 'btcusdt',

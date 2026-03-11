@@ -28,6 +28,7 @@ npm run serve
 
 ### 2.2 映射逻辑（已实现）
 
+- Binance 模式下订单簿会以“空流动性价格梯”初始化（无随机 seed 挂单），避免 mock seed 残留污染 best bid/ask 与深度上下文。
 - `symbol@depth@100ms`
   - 对同价位维护本地缓存 `depthState`
   - 新值 > 旧值 -> `add`

@@ -1,8 +1,9 @@
 export class OrderBook {
-    constructor(centerPrice = 3856, tickSize = 0.25, depth = 140) {
+    constructor(centerPrice = 3856, tickSize = 0.25, depth = 140, randomSeededLiquidity = true) {
         this.centerPrice = centerPrice;
         this.tickSize = tickSize;
         this.depth = depth;
+        this.randomSeededLiquidity = randomSeededLiquidity;
         this.levels = new Map();
         this.currentPrice = centerPrice;
         this.seed();
@@ -12,8 +13,16 @@ export class OrderBook {
         for (let i = -half; i <= half; i++) {
             const price = this.normalize(this.centerPrice + i * this.tickSize);
             const distance = Math.max(1, Math.abs(i));
-            const bidSize = i <= 0 ? this.rand(80, 5000) / Math.sqrt(distance) : this.rand(5, 500);
-            const askSize = i >= 0 ? this.rand(80, 5000) / Math.sqrt(distance) : this.rand(5, 500);
+            const bidSize = this.randomSeededLiquidity
+                ? i <= 0
+                    ? this.rand(80, 5000) / Math.sqrt(distance)
+                    : this.rand(5, 500)
+                : 0;
+            const askSize = this.randomSeededLiquidity
+                ? i >= 0
+                    ? this.rand(80, 5000) / Math.sqrt(distance)
+                    : this.rand(5, 500)
+                : 0;
             this.levels.set(price, this.createLevel(price, bidSize, askSize));
         }
     }
