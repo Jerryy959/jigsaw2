@@ -97,6 +97,7 @@ export class BinanceMarketDataSource {
             price: this.orderBook.normalize(rawPrice),
             size: this.normalizeToTick(rawSize),
             timestamp: Date.now(),
+            impactsLiquidity: false,
         });
     }
     normalizeToTick(size) {

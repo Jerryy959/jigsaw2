@@ -35,6 +35,7 @@ npm run serve
 - `symbol@trade`
   - `m=true`（买方是挂单方）=> 主动卖 -> `side='ask'`
   - `m=false` => 主动买 -> `side='bid'`
+  - 为避免与 depth 同步扣减导致重复减仓，trade 事件带 `impactsLiquidity=false`，仅用于 footprint/高亮/最新价
 
 > 说明：当前原型以“增量可视化”为主，因此采用“WebSocket 增量差分 + 本地状态”模式；如果你要做严格盘口一致性，需要加 REST 快照 + `U/u/pu` 序列校验（见第 5 节）。
 

@@ -83,13 +83,19 @@ export class OrderBook {
     const flashMs = 200 + Math.floor(Math.random() * 300);
     this.currentPrice = this.normalize(event.price);
 
+    const impactsLiquidity = event.impactsLiquidity ?? true;
+
     if (event.side === 'bid') {
-      level.askSize = Math.max(0, level.askSize - event.size);
+      if (impactsLiquidity) {
+        level.askSize = Math.max(0, level.askSize - event.size);
+      }
       level.buyTraded += event.size;
       level.buyFlashUntil = now + flashMs;
       level.askFlashUntil = now + flashMs;
     } else {
-      level.bidSize = Math.max(0, level.bidSize - event.size);
+      if (impactsLiquidity) {
+        level.bidSize = Math.max(0, level.bidSize - event.size);
+      }
       level.sellTraded += event.size;
       level.sellFlashUntil = now + flashMs;
       level.bidFlashUntil = now + flashMs;

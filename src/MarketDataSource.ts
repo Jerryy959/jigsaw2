@@ -142,6 +142,7 @@ export class BinanceMarketDataSource implements MarketDataSource {
       price: this.orderBook.normalize(rawPrice),
       size: this.normalizeToTick(rawSize),
       timestamp: Date.now(),
+      impactsLiquidity: false,
     });
   }
 
