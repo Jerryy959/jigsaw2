@@ -1,4 +1,5 @@
 import { DOMRenderer } from './DOMRenderer.js';
+import { BinanceMarketDataSource } from './MarketDataSource.js';
 import { MockDataGenerator } from './MockDataGenerator.js';
 import { MyOrderManager } from './MyOrderManager.js';
 import { MockMatchingEngine } from './MockMatchingEngine.js';
@@ -146,13 +147,20 @@ function bootstrap() {
         panelDirty = true;
     });
     renderer.init();
-    const mock = new MockDataGenerator(book, 70, onMarketEvent, {
-        addWeight: 0.42,
-        cancelWeight: 0.25,
-        tradeWeight: 0.33,
-        burstChance: 0.32,
-    });
-    mock.start();
+    const sourceMode = new URLSearchParams(window.location.search).get('source') ?? 'mock';
+    const marketDataSource = sourceMode === 'binance'
+        ? new BinanceMarketDataSource(book, onMarketEvent, {
+            symbol: 'btcusdt',
+            tickSize: 0.0001,
+        })
+        : new MockDataGenerator(book, 70, onMarketEvent, {
+            addWeight: 0.42,
+            cancelWeight: 0.25,
+            tradeWeight: 0.33,
+            burstChance: 0.32,
+        });
+    marketDataSource.start();
+    console.info(`[MarketData] source started: ${marketDataSource.getName()}`);
     const loop = () => {
         const now = performance.now();
         const shouldRenderBook = renderIntervalMs === 0 || now - lastRenderAt >= renderIntervalMs;
@@ -166,5 +174,8 @@ function bootstrap() {
         requestAnimationFrame(loop);
     };
     loop();
+    window.addEventListener('beforeunload', () => {
+        marketDataSource.stop();
+    });
 }
 bootstrap();
