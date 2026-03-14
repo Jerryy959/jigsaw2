@@ -12,6 +12,8 @@ export class DOMRenderer {
         this.posLoc = -1;
         this.colorLoc = -1;
         this.scrollOffset = 0;
+        this.wheelAccumulator = 0;
+        this.hoverRow = -1;
         this.lastCurrentPrice = null;
         // Column order: bid book | bid footprint | price | ask footprint | ask book
         this.colBidBook = 10;
@@ -21,8 +23,46 @@ export class DOMRenderer {
         this.colAskBook = 525;
         this.handleWheel = (ev) => {
             ev.preventDefault();
-            this.scrollOffset += ev.deltaY > 0 ? 1 : -1;
-            this.scrollOffset = Math.max(-200, Math.min(200, this.scrollOffset));
+            const scaledDelta = ev.deltaY * (ev.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : ev.deltaMode === WheelEvent.DOM_DELTA_PAGE ? 120 : 1);
+            this.wheelAccumulator += scaledDelta;
+            const threshold = ev.shiftKey ? 18 : 36;
+            const steps = Math.trunc(this.wheelAccumulator / threshold);
+            if (steps !== 0) {
+                this.adjustScroll(steps);
+                this.wheelAccumulator -= steps * threshold;
+            }
+        };
+        this.handleMouseMove = (ev) => {
+            const rect = this.uiCanvas.getBoundingClientRect();
+            const y = ev.clientY - rect.top;
+            const row = Math.floor((y - this.top) / this.rowH);
+            this.hoverRow = row >= 0 && row < this.visibleRows ? row : -1;
+        };
+        this.handleMouseLeave = () => {
+            this.hoverRow = -1;
+        };
+        this.handleDoubleClick = () => {
+            this.resetScrollToCurrent();
+        };
+        this.handleKeydown = (ev) => {
+            const target = ev.target;
+            if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {
+                return;
+            }
+            if (ev.key === 'Home') {
+                this.resetScrollToCurrent();
+                ev.preventDefault();
+                return;
+            }
+            if (ev.key === 'ArrowUp') {
+                this.adjustScroll(-1);
+                ev.preventDefault();
+                return;
+            }
+            if (ev.key === 'ArrowDown') {
+                this.adjustScroll(1);
+                ev.preventDefault();
+            }
         };
         this.handleClick = (ev) => {
             const rect = this.uiCanvas.getBoundingClientRect();
@@ -64,7 +104,11 @@ export class DOMRenderer {
         this.ctx = ctx;
         this.initGL();
         this.uiCanvas.addEventListener('click', this.handleClick);
+        this.uiCanvas.addEventListener('dblclick', this.handleDoubleClick);
+        this.uiCanvas.addEventListener('mousemove', this.handleMouseMove);
+        this.uiCanvas.addEventListener('mouseleave', this.handleMouseLeave);
         this.uiCanvas.addEventListener('wheel', this.handleWheel, { passive: false });
+        window.addEventListener('keydown', this.handleKeydown);
     }
     render() {
         const snap = this.orderBook.getSnapshot();
@@ -84,6 +128,9 @@ export class DOMRenderer {
             const sellTradeRatio = l.sellTraded / snap.maxTradeSize;
             if (i % 2 === 0) {
                 rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.03, g: 0.15, b: 0.2, a: 0.16 });
+            }
+            if (this.hoverRow === i) {
+                rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.18, g: 0.3, b: 0.41, a: 0.2 });
             }
             // current and +-2 rows highlighted across all columns (dark, eye-friendly blend)
             if (anchorIndex >= 0 && Math.abs(i - anchorIndex) <= 2) {
@@ -143,6 +190,9 @@ export class DOMRenderer {
         ctx.fillText('PRICE', this.colPrice + 33, 24);
         ctx.fillText('BUY CUM', this.colAskFoot + 22, 24);
         ctx.fillText('ASK BOOK', this.colAskBook + 45, 24);
+        ctx.fillStyle = '#89a2b7';
+        ctx.font = '11px sans-serif';
+        ctx.fillText(`滚轮滚动 / Shift+滚轮加速 / Home归中  偏移:${this.scrollOffset}`, 560, 24);
         ctx.font = '15px monospace';
         levels.forEach((l, i) => {
             const y = this.top + i * this.rowH + 15;
@@ -245,5 +295,12 @@ export class DOMRenderer {
         this.gl.attachShader(p, fs);
         this.gl.linkProgram(p);
         return p;
+    }
+    adjustScroll(step) {
+        this.scrollOffset = Math.max(-300, Math.min(300, this.scrollOffset + step));
+    }
+    resetScrollToCurrent() {
+        this.scrollOffset = 0;
+        this.wheelAccumulator = 0;
     }
 }

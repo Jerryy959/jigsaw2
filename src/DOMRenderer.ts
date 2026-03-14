@@ -29,6 +29,8 @@ export class DOMRenderer {
   private posLoc = -1;
   private colorLoc = -1;
   private scrollOffset = 0;
+  private wheelAccumulator = 0;
+  private hoverRow = -1;
   private lastCurrentPrice: number | null = null;
 
   // Column order: bid book | bid footprint | price | ask footprint | ask book
@@ -74,7 +76,11 @@ export class DOMRenderer {
     this.initGL();
 
     this.uiCanvas.addEventListener('click', this.handleClick);
+    this.uiCanvas.addEventListener('dblclick', this.handleDoubleClick);
+    this.uiCanvas.addEventListener('mousemove', this.handleMouseMove);
+    this.uiCanvas.addEventListener('mouseleave', this.handleMouseLeave);
     this.uiCanvas.addEventListener('wheel', this.handleWheel, { passive: false });
+    window.addEventListener('keydown', this.handleKeydown);
   }
 
   public render(): void {
@@ -97,6 +103,10 @@ export class DOMRenderer {
 
       if (i % 2 === 0) {
         rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.03, g: 0.15, b: 0.2, a: 0.16 });
+      }
+
+      if (this.hoverRow === i) {
+        rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.18, g: 0.3, b: 0.41, a: 0.2 });
       }
 
       // current and +-2 rows highlighted across all columns (dark, eye-friendly blend)
@@ -166,6 +176,9 @@ export class DOMRenderer {
     ctx.fillText('PRICE', this.colPrice + 33, 24);
     ctx.fillText('BUY CUM', this.colAskFoot + 22, 24);
     ctx.fillText('ASK BOOK', this.colAskBook + 45, 24);
+    ctx.fillStyle = '#89a2b7';
+    ctx.font = '11px sans-serif';
+    ctx.fillText(`滚轮滚动 / Shift+滚轮加速 / Home归中  偏移:${this.scrollOffset}`, 560, 24);
 
     ctx.font = '15px monospace';
     levels.forEach((l, i) => {
@@ -292,10 +305,65 @@ export class DOMRenderer {
     return p;
   }
 
+  private adjustScroll(step: number): void {
+    this.scrollOffset = Math.max(-300, Math.min(300, this.scrollOffset + step));
+  }
+
+  private resetScrollToCurrent(): void {
+    this.scrollOffset = 0;
+    this.wheelAccumulator = 0;
+  }
+
   private handleWheel = (ev: WheelEvent): void => {
     ev.preventDefault();
-    this.scrollOffset += ev.deltaY > 0 ? 1 : -1;
-    this.scrollOffset = Math.max(-200, Math.min(200, this.scrollOffset));
+    const scaledDelta = ev.deltaY * (ev.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : ev.deltaMode === WheelEvent.DOM_DELTA_PAGE ? 120 : 1);
+    this.wheelAccumulator += scaledDelta;
+
+    const threshold = ev.shiftKey ? 18 : 36;
+    const steps = Math.trunc(this.wheelAccumulator / threshold);
+    if (steps !== 0) {
+      this.adjustScroll(steps);
+      this.wheelAccumulator -= steps * threshold;
+    }
+  };
+
+  private handleMouseMove = (ev: MouseEvent): void => {
+    const rect = this.uiCanvas.getBoundingClientRect();
+    const y = ev.clientY - rect.top;
+    const row = Math.floor((y - this.top) / this.rowH);
+    this.hoverRow = row >= 0 && row < this.visibleRows ? row : -1;
+  };
+
+  private handleMouseLeave = (): void => {
+    this.hoverRow = -1;
+  };
+
+  private handleDoubleClick = (): void => {
+    this.resetScrollToCurrent();
+  };
+
+  private handleKeydown = (ev: KeyboardEvent): void => {
+    const target = ev.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {
+      return;
+    }
+
+    if (ev.key === 'Home') {
+      this.resetScrollToCurrent();
+      ev.preventDefault();
+      return;
+    }
+
+    if (ev.key === 'ArrowUp') {
+      this.adjustScroll(-1);
+      ev.preventDefault();
+      return;
+    }
+
+    if (ev.key === 'ArrowDown') {
+      this.adjustScroll(1);
+      ev.preventDefault();
+    }
   };
 
   private handleClick = (ev: MouseEvent): void => {
