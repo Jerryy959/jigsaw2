@@ -200,12 +200,12 @@ export class DOMRenderer {
       ctx.fillStyle = '#d8ecfc';
       ctx.fillText(Math.round(l.bidSize).toString(), this.colBidBook + 7, y);
       ctx.fillStyle = '#c5dbf3';
-      ctx.fillText(Math.round(l.sellTraded).toString(), this.colBidFoot + 8, y);
+      ctx.fillText(this.formatCumValue(l.sellTraded), this.colBidFoot + 8, y);
       ctx.fillStyle = i === anchorIndex ? '#ffffff' : '#e8ecef';
       ctx.font = i === anchorIndex ? 'bold 16px monospace' : '15px monospace';
       ctx.fillText(this.orderBook.formatPrice(l.price), this.colPrice + 10, y);
       ctx.fillStyle = '#f7d4d4';
-      ctx.fillText(Math.round(l.buyTraded).toString(), this.colAskFoot + 8, y);
+      ctx.fillText(this.formatCumValue(l.buyTraded), this.colAskFoot + 8, y);
       ctx.fillStyle = '#ffe2e2';
       ctx.fillText(Math.round(l.askSize).toString(), this.colAskBook + 7, y);
 
@@ -237,6 +237,20 @@ export class DOMRenderer {
     ctx.fillStyle = '#93a9bb';
     ctx.font = '11px sans-serif';
     ctx.fillText(`current: ${this.orderBook.formatPrice(snap.currentPrice)}  bestBid: ${this.orderBook.formatPrice(snap.bestBid)}  bestAsk: ${this.orderBook.formatPrice(snap.bestAsk)}`, 10, this.height - 12);
+  }
+
+
+  private formatCumValue(value: number): string {
+    if (!Number.isFinite(value) || value <= 0) {
+      return '0';
+    }
+    if (value >= 1000) {
+      return Math.round(value).toString();
+    }
+    if (value >= 100) {
+      return value.toFixed(1);
+    }
+    return value.toFixed(2);
   }
 
   private drawRects(rects: RectDraw[]): void {
