@@ -12,6 +12,7 @@ export class DOMRenderer {
         this.posLoc = -1;
         this.colorLoc = -1;
         this.scrollOffset = 0;
+        this.lastCurrentPrice = null;
         // Column order: bid book | bid footprint | price | ask footprint | ask book
         this.colBidBook = 10;
         this.colBidFoot = 195;
@@ -67,6 +68,11 @@ export class DOMRenderer {
     }
     render() {
         const snap = this.orderBook.getSnapshot();
+        if (this.lastCurrentPrice !== null && snap.currentPrice !== this.lastCurrentPrice) {
+            // Always recenter ladder on latest traded price when market moves.
+            this.scrollOffset = 0;
+        }
+        this.lastCurrentPrice = snap.currentPrice;
         const { windowLevels, anchorIndex } = this.pickWindow(snap);
         const now = Date.now();
         const rects = [];
