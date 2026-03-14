@@ -11,11 +11,13 @@ export class DOMRenderer {
         this.visibleRows = 48;
         this.posLoc = -1;
         this.colorLoc = -1;
-        this.scrollOffset = 0;
+        this.targetScrollOffset = 0;
+        this.displayScrollOffset = 0;
         this.wheelAccumulator = 0;
         this.hoverRow = -1;
         this.lastCurrentPrice = null;
         this.isContextLost = false;
+        this.autoFocusLocked = true;
         // Column order: bid book | bid footprint | price | ask footprint | ask book
         this.colBidBook = 10;
         this.colBidFoot = 195;
@@ -23,6 +25,9 @@ export class DOMRenderer {
         this.colAskFoot = 415;
         this.colAskBook = 525;
         this.handleWheel = (ev) => {
+            if (this.autoFocusLocked) {
+                return;
+            }
             ev.preventDefault();
             const scaledDelta = ev.deltaY * (ev.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : ev.deltaMode === WheelEvent.DOM_DELTA_PAGE ? 120 : 1);
             this.wheelAccumulator += scaledDelta;
@@ -53,6 +58,9 @@ export class DOMRenderer {
             if (ev.key === 'Home') {
                 this.resetScrollToCurrent();
                 ev.preventDefault();
+                return;
+            }
+            if (this.autoFocusLocked) {
                 return;
             }
             if (ev.key === 'ArrowUp') {
@@ -122,6 +130,13 @@ export class DOMRenderer {
         this.glCanvas.addEventListener('webglcontextlost', this.handleContextLost);
         this.glCanvas.addEventListener('webglcontextrestored', this.handleContextRestored);
     }
+    setAutoFocusLocked(locked) {
+        this.autoFocusLocked = locked;
+        if (locked) {
+            this.targetScrollOffset = 0;
+            this.wheelAccumulator = 0;
+        }
+    }
     recoverAfterTabSwitch() {
         if (this.isContextLost || this.gl.isContextLost()) {
             return;
@@ -131,11 +146,16 @@ export class DOMRenderer {
     }
     render() {
         const snap = this.orderBook.getSnapshot();
-        if (this.lastCurrentPrice !== null && snap.currentPrice !== this.lastCurrentPrice) {
-            // Always recenter ladder on latest traded price when market moves.
-            this.scrollOffset = 0;
+        if (this.lastCurrentPrice !== null && snap.currentPrice !== this.lastCurrentPrice && this.autoFocusLocked) {
+            // When focus lock is on, keep ladder centered on latest traded price.
+            this.targetScrollOffset = 0;
         }
         this.lastCurrentPrice = snap.currentPrice;
+        const smoothFactor = this.autoFocusLocked ? 0.32 : 0.24;
+        this.displayScrollOffset += (this.targetScrollOffset - this.displayScrollOffset) * smoothFactor;
+        if (Math.abs(this.targetScrollOffset - this.displayScrollOffset) < 0.02) {
+            this.displayScrollOffset = this.targetScrollOffset;
+        }
         const { windowLevels, anchorIndex } = this.pickWindow(snap);
         const now = Date.now();
         const rects = [];
@@ -188,7 +208,8 @@ export class DOMRenderer {
         const total = snap.levels.length;
         const currentIdx = snap.levels.findIndex((l) => l.price === snap.currentPrice);
         const baseCenter = currentIdx < 0 ? Math.floor(total / 2) : currentIdx;
-        const center = Math.max(0, Math.min(total - 1, baseCenter + this.scrollOffset));
+        const centerOffset = Math.round(this.displayScrollOffset);
+        const center = Math.max(0, Math.min(total - 1, baseCenter + centerOffset));
         const half = Math.floor(this.visibleRows / 2);
         const start = Math.max(0, Math.min(total - this.visibleRows, center - half));
         const end = Math.min(total, start + this.visibleRows);
@@ -211,7 +232,7 @@ export class DOMRenderer {
         ctx.fillText('ASK BOOK', this.colAskBook + 45, 24);
         ctx.fillStyle = '#89a2b7';
         ctx.font = '11px sans-serif';
-        ctx.fillText(`滚轮滚动 / Shift加速 / Home归中 / 偏移:${this.scrollOffset}`, 370, 40);
+        ctx.fillText(`滚轮滚动 / Shift加速 / Home归中 / 偏移:${Math.round(this.displayScrollOffset)} / ${this.autoFocusLocked ? '锁定跟随' : '解锁滑动'}`, 320, 40);
         ctx.font = '15px monospace';
         levels.forEach((l, i) => {
             const y = this.top + i * this.rowH + 15;
@@ -331,10 +352,10 @@ export class DOMRenderer {
         return p;
     }
     adjustScroll(step) {
-        this.scrollOffset = Math.max(-300, Math.min(300, this.scrollOffset + step));
+        this.targetScrollOffset = Math.max(-300, Math.min(300, this.targetScrollOffset + step));
     }
     resetScrollToCurrent() {
-        this.scrollOffset = 0;
+        this.targetScrollOffset = 0;
         this.wheelAccumulator = 0;
     }
 }

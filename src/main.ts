@@ -50,6 +50,8 @@ function bootstrap(): void {
     decayHalfLifeMs: footprintDecayHalfLifeMs,
   });
 
+  let autoFocusLocked = true;
+
   let panelDirty = true;
   let lastOrdersVersion = -1;
   let lastRenderAt = 0;
@@ -128,6 +130,13 @@ function bootstrap(): void {
           <option value="200" ${renderIntervalMs === 200 ? 'selected' : ''}>200ms</option>
           <option value="500" ${renderIntervalMs === 500 ? 'selected' : ''}>500ms</option>
           <option value="1000" ${renderIntervalMs === 1000 ? 'selected' : ''}>1000ms</option>
+        </select>
+      </div>
+      <div class="refresh-control">
+        <label for="focus-lock-mode">价格自动聚焦</label>
+        <select id="focus-lock-mode" class="refresh-select">
+          <option value="locked" ${autoFocusLocked ? 'selected' : ''}>锁定跟随买一卖一</option>
+          <option value="free" ${autoFocusLocked ? '' : 'selected'}>解锁自由滑动</option>
         </select>
       </div>
       <div class="footprint-control-grid">
@@ -213,6 +222,13 @@ function bootstrap(): void {
       return;
     }
 
+    if (select.id === 'focus-lock-mode') {
+      autoFocusLocked = select.value !== 'free';
+      renderer.setAutoFocusLocked(autoFocusLocked);
+      panelDirty = true;
+      return;
+    }
+
     if (select.id === 'fp-bucket') {
       footprintBucketTicks = Math.max(1, Number(select.value) || 1);
     } else {
@@ -273,6 +289,19 @@ function bootstrap(): void {
     panelDirty = true;
   });
   renderer.init();
+  renderer.setAutoFocusLocked(autoFocusLocked);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      renderer.recoverAfterTabSwitch();
+      panelDirty = true;
+    }
+  });
+
+  window.addEventListener('pageshow', () => {
+    renderer.recoverAfterTabSwitch();
+    panelDirty = true;
+  });
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
