@@ -56,17 +56,32 @@ describe('OrderBook footprint display config', () => {
     const now = Date.now();
     const book = new OrderBook(100, 1, 20, false);
 
+    book.applyEvent({ type: 'add', side: 'bid', price: 99, size: 20, timestamp: now - 2_000 });
+    book.applyEvent({ type: 'add', side: 'ask', price: 101, size: 20, timestamp: now - 2_000 });
+
     book.setFootprintDisplayConfig({ bucketSizeTicks: 2, timeWindowMs: 60000, decayHalfLifeMs: 0 });
     book.applyEvent({ type: 'trade', side: 'bid', price: 101, size: 10, timestamp: now - 1_000 });
     book.applyEvent({ type: 'trade', side: 'bid', price: 102, size: 5, timestamp: now - 1_000 });
+    book.applyEvent({ type: 'trade', side: 'ask', price: 99, size: 4, timestamp: now - 1_000 });
 
     const snapBucket = book.getSnapshot();
+    const l98 = snapBucket.levels.find((l) => l.price === 98);
+    const l99 = snapBucket.levels.find((l) => l.price === 99);
+    const l100 = snapBucket.levels.find((l) => l.price === 100);
     const l101 = snapBucket.levels.find((l) => l.price === 101);
     const l102 = snapBucket.levels.find((l) => l.price === 102);
-    const l103 = snapBucket.levels.find((l) => l.price === 103);
-    expect(Math.round((l101?.buyTraded ?? 0) * 1000) / 1000).toBe(15);
-    expect(Math.round((l102?.buyTraded ?? 0) * 1000) / 1000).toBe(30);
-    expect((l103?.buyTraded ?? 0)).toBeGreaterThanOrEqual(15);
+
+    // BUY CUM should only show on ask side (>= bestAsk)
+    expect(l99?.buyTraded ?? 0).toBe(0);
+    expect(l100?.buyTraded ?? 0).toBe(0);
+    expect(l101?.buyTraded ?? 0).toBeGreaterThan(0);
+    expect((l102?.buyTraded ?? 0)).toBeGreaterThanOrEqual(l101?.buyTraded ?? 0);
+
+    // SELL CUM should only show on bid side (<= bestBid)
+    expect(l101?.sellTraded ?? 0).toBe(0);
+    expect(l100?.sellTraded ?? 0).toBe(0);
+    expect(l99?.sellTraded ?? 0).toBeGreaterThan(0);
+    expect((l98?.sellTraded ?? 0)).toBeGreaterThanOrEqual(l99?.sellTraded ?? 0);
 
     book.setFootprintDisplayConfig({ bucketSizeTicks: 1, timeWindowMs: 500, decayHalfLifeMs: 0 });
     const snapWindow = book.getSnapshot();
