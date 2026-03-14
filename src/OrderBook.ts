@@ -91,7 +91,9 @@ export class OrderBook {
     if (!Number.isFinite(price)) {
       return;
     }
-    this.currentPrice = this.normalize(price);
+    const normalizedPrice = this.normalize(price);
+    this.currentPrice = normalizedPrice;
+    this.getOrCreate(normalizedPrice);
   }
 
   public setFootprintDisplayConfig(config: Partial<FootprintDisplayConfig>): void {
