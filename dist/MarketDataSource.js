@@ -12,6 +12,7 @@ class BaseRealtimeSource {
         this.deps = deps;
         this.depthState = { bid: new Map(), ask: new Map() };
         this.sockets = [];
+        this.hasFocusedFromDepth = false;
     }
     start() {
         if (this.sockets.length > 0) {
@@ -24,6 +25,7 @@ class BaseRealtimeSource {
         this.sockets = [];
         this.depthState.bid.clear();
         this.depthState.ask.clear();
+        this.hasFocusedFromDepth = false;
     }
     openSocket(url, onData, onOpen) {
         const socket = new WebSocket(url);
@@ -53,15 +55,16 @@ class BaseRealtimeSource {
         }
         this.applyDepthSide('bid', message.bids);
         this.applyDepthSide('ask', message.asks);
-        this.focusCurrentPriceFromDepth();
+        this.focusCurrentPriceFromDepthOnce();
     }
-    focusCurrentPriceFromDepth() {
-        if (!this.depthState.bid.size || !this.depthState.ask.size) {
+    focusCurrentPriceFromDepthOnce() {
+        if (this.hasFocusedFromDepth || !this.depthState.bid.size || !this.depthState.ask.size) {
             return;
         }
         const bestBid = Math.max(...this.depthState.bid.keys());
         const bestAsk = Math.min(...this.depthState.ask.keys());
         this.deps.orderBook.setCurrentPrice((bestBid + bestAsk) / 2);
+        this.hasFocusedFromDepth = true;
     }
     applyTrade(payload) {
         const rawPrice = Number(payload.price);

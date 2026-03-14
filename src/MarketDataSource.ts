@@ -84,6 +84,7 @@ function normalizeSymbol(exchange: Exchange, symbol: string): string {
 abstract class BaseRealtimeSource implements MarketDataSource {
   private readonly depthState: DepthState = { bid: new Map(), ask: new Map() };
   private sockets: WebSocket[] = [];
+  private hasFocusedFromDepth = false;
 
   constructor(protected readonly deps: SourceRuntimeDeps) {}
 
@@ -99,6 +100,7 @@ abstract class BaseRealtimeSource implements MarketDataSource {
     this.sockets = [];
     this.depthState.bid.clear();
     this.depthState.ask.clear();
+    this.hasFocusedFromDepth = false;
   }
 
   public abstract getName(): string;
@@ -133,17 +135,18 @@ abstract class BaseRealtimeSource implements MarketDataSource {
     }
     this.applyDepthSide('bid', message.bids);
     this.applyDepthSide('ask', message.asks);
-    this.focusCurrentPriceFromDepth();
+    this.focusCurrentPriceFromDepthOnce();
   }
 
-  private focusCurrentPriceFromDepth(): void {
-    if (!this.depthState.bid.size || !this.depthState.ask.size) {
+  private focusCurrentPriceFromDepthOnce(): void {
+    if (this.hasFocusedFromDepth || !this.depthState.bid.size || !this.depthState.ask.size) {
       return;
     }
 
     const bestBid = Math.max(...this.depthState.bid.keys());
     const bestAsk = Math.min(...this.depthState.ask.keys());
     this.deps.orderBook.setCurrentPrice((bestBid + bestAsk) / 2);
+    this.hasFocusedFromDepth = true;
   }
 
   protected applyTrade(payload: TradePayload): void {
