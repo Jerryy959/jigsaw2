@@ -1,15 +1,8 @@
 import type { BookEvent, BookLevel, DOMSnapshot, FootprintDisplayConfig, Side } from './types.js';
 
-interface TradePrint {
-  price: number;
-  side: Side;
-  size: number;
-  timestamp: number;
-}
-
 export class OrderBook {
   private readonly levels = new Map<number, BookLevel>();
-  private readonly tradePrints: TradePrint[] = [];
+  private readonly sessionTradedByPrice = new Map<number, { buy: number; sell: number }>();
   private currentPrice: number;
   private readonly tickDecimals: number;
   private displayConfig: FootprintDisplayConfig = {
@@ -137,7 +130,6 @@ export class OrderBook {
       timeWindowMs: Math.max(0, Math.floor(config.timeWindowMs ?? this.displayConfig.timeWindowMs)),
       decayHalfLifeMs: Math.max(0, Math.floor(config.decayHalfLifeMs ?? this.displayConfig.decayHalfLifeMs)),
     };
-    this.pruneTrades(Date.now());
   }
 
   private getOrCreate(price: number): BookLevel {
@@ -193,33 +185,21 @@ export class OrderBook {
       level.bidFlashUntil = now + flashMs;
     }
 
-    this.tradePrints.push({
-      price: this.normalize(event.price),
-      side: event.side,
-      size: event.size,
-      timestamp: now,
-    });
-
-    this.pruneTrades(now);
+    this.recordSessionTrade(event.price, event.side, event.size);
   }
 
-  private pruneTrades(now: number): void {
-    const windowRetain = this.displayConfig.timeWindowMs > 0 ? this.displayConfig.timeWindowMs * 2 : 0;
-    const decayRetain = this.displayConfig.decayHalfLifeMs > 0 ? this.displayConfig.decayHalfLifeMs * 8 : 0;
-    const maxRetainMs = Math.max(windowRetain, decayRetain, 10 * 60_000);
-    const threshold = now - maxRetainMs;
-
-    let deleteCount = 0;
-    while (deleteCount < this.tradePrints.length && this.tradePrints[deleteCount].timestamp < threshold) {
-      deleteCount += 1;
+  private recordSessionTrade(price: number, side: Side, size: number): void {
+    if (!Number.isFinite(size) || size <= 0) {
+      return;
     }
-    if (deleteCount > 0) {
-      this.tradePrints.splice(0, deleteCount);
+    const normalizedPrice = this.normalize(price);
+    const atPrice = this.sessionTradedByPrice.get(normalizedPrice) ?? { buy: 0, sell: 0 };
+    if (side === 'bid') {
+      atPrice.buy += size;
+    } else {
+      atPrice.sell += size;
     }
-
-    if (this.tradePrints.length > 30_000) {
-      this.tradePrints.splice(0, this.tradePrints.length - 30_000);
-    }
+    this.sessionTradedByPrice.set(normalizedPrice, atPrice);
   }
 
   public getLiquidity(price: number, side: Side): number {
@@ -240,35 +220,14 @@ export class OrderBook {
     return Number(bucketPrice.toFixed(this.tickDecimals));
   }
 
-  private getTradeDecayFactor(ageMs: number): number {
-    if (this.displayConfig.decayHalfLifeMs <= 0) {
-      return 1;
-    }
-    return Math.pow(0.5, ageMs / this.displayConfig.decayHalfLifeMs);
-  }
-
-  private projectTradeTotals(now: number): Map<number, { buy: number; sell: number }> {
+  private projectTradeTotals(): Map<number, { buy: number; sell: number }> {
     const byBucket = new Map<number, { buy: number; sell: number }>();
 
-    for (const trade of this.tradePrints) {
-      const ageMs = now - trade.timestamp;
-      if (this.displayConfig.timeWindowMs > 0 && ageMs > this.displayConfig.timeWindowMs) {
-        continue;
-      }
-
-      const weight = this.getTradeDecayFactor(Math.max(0, ageMs));
-      const weightedSize = trade.size * weight;
-      if (weightedSize <= 0) {
-        continue;
-      }
-
-      const bucketPrice = this.resolveBucketPrice(trade.price);
+    for (const [price, traded] of this.sessionTradedByPrice.entries()) {
+      const bucketPrice = this.resolveBucketPrice(price);
       const bucket = byBucket.get(bucketPrice) ?? { buy: 0, sell: 0 };
-      if (trade.side === 'bid') {
-        bucket.buy += weightedSize;
-      } else {
-        bucket.sell += weightedSize;
-      }
+      bucket.buy += traded.buy;
+      bucket.sell += traded.sell;
       byBucket.set(bucketPrice, bucket);
     }
 
@@ -276,8 +235,7 @@ export class OrderBook {
   }
 
   public getSnapshot(): DOMSnapshot {
-    const now = Date.now();
-    const projectedTrades = this.projectTradeTotals(now);
+    const projectedTrades = this.projectTradeTotals();
 
     const levels = [...this.levels.values()]
       .map((level) => {
