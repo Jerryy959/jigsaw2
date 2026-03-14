@@ -1,7 +1,8 @@
 import { OrderBook } from './OrderBook.js';
+import type { MarketDataSource } from './MarketDataSource.js';
 import type { BookEvent, MockConfig, Side } from './types.js';
 
-export class MockDataGenerator {
+export class MockDataGenerator implements MarketDataSource {
   private timer: number | null = null;
 
   constructor(
@@ -26,6 +27,18 @@ export class MockDataGenerator {
         this.onEvent(event);
       }
     }, this.intervalMs);
+  }
+
+  public stop(): void {
+    if (!this.timer) {
+      return;
+    }
+    window.clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  public getName(): string {
+    return 'mock';
   }
 
   private pickType(): BookEvent['type'] {

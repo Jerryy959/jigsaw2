@@ -22,6 +22,16 @@ export class MockDataGenerator {
             }
         }, this.intervalMs);
     }
+    stop() {
+        if (!this.timer) {
+            return;
+        }
+        window.clearInterval(this.timer);
+        this.timer = null;
+    }
+    getName() {
+        return 'mock';
+    }
     pickType() {
         const total = this.config.addWeight + this.config.cancelWeight + this.config.tradeWeight;
         const r = Math.random() * total;

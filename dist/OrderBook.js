@@ -1,8 +1,9 @@
 export class OrderBook {
-    constructor(centerPrice = 3856, tickSize = 0.25, depth = 140) {
+    constructor(centerPrice = 3856, tickSize = 0.25, depth = 140, randomSeededLiquidity = true) {
         this.centerPrice = centerPrice;
         this.tickSize = tickSize;
         this.depth = depth;
+        this.randomSeededLiquidity = randomSeededLiquidity;
         this.levels = new Map();
         this.currentPrice = centerPrice;
         this.seed();
@@ -12,8 +13,16 @@ export class OrderBook {
         for (let i = -half; i <= half; i++) {
             const price = this.normalize(this.centerPrice + i * this.tickSize);
             const distance = Math.max(1, Math.abs(i));
-            const bidSize = i <= 0 ? this.rand(80, 5000) / Math.sqrt(distance) : this.rand(5, 500);
-            const askSize = i >= 0 ? this.rand(80, 5000) / Math.sqrt(distance) : this.rand(5, 500);
+            const bidSize = this.randomSeededLiquidity
+                ? i <= 0
+                    ? this.rand(80, 5000) / Math.sqrt(distance)
+                    : this.rand(5, 500)
+                : 0;
+            const askSize = this.randomSeededLiquidity
+                ? i >= 0
+                    ? this.rand(80, 5000) / Math.sqrt(distance)
+                    : this.rand(5, 500)
+                : 0;
             this.levels.set(price, this.createLevel(price, bidSize, askSize));
         }
     }
@@ -70,14 +79,19 @@ export class OrderBook {
         // trade flashes 200-500ms
         const flashMs = 200 + Math.floor(Math.random() * 300);
         this.currentPrice = this.normalize(event.price);
+        const impactsLiquidity = event.impactsLiquidity ?? true;
         if (event.side === 'bid') {
-            level.askSize = Math.max(0, level.askSize - event.size);
+            if (impactsLiquidity) {
+                level.askSize = Math.max(0, level.askSize - event.size);
+            }
             level.buyTraded += event.size;
             level.buyFlashUntil = now + flashMs;
             level.askFlashUntil = now + flashMs;
         }
         else {
-            level.bidSize = Math.max(0, level.bidSize - event.size);
+            if (impactsLiquidity) {
+                level.bidSize = Math.max(0, level.bidSize - event.size);
+            }
             level.sellTraded += event.size;
             level.sellFlashUntil = now + flashMs;
             level.bidFlashUntil = now + flashMs;

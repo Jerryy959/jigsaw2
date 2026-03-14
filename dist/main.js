@@ -1,4 +1,5 @@
 import { DOMRenderer } from './DOMRenderer.js';
+import { BinanceMarketDataSource } from './MarketDataSource.js';
 import { MockDataGenerator } from './MockDataGenerator.js';
 import { MyOrderManager } from './MyOrderManager.js';
 import { MockMatchingEngine } from './MockMatchingEngine.js';
@@ -10,7 +11,9 @@ function bootstrap() {
     if (!app || !ordersPanel || !toastRoot) {
         throw new Error('Missing root nodes');
     }
-    const book = new OrderBook(3856, 0.25, 160);
+    const sourceMode = new URLSearchParams(window.location.search).get('source') ?? 'mock';
+    const randomSeededLiquidity = sourceMode !== 'binance';
+    const book = new OrderBook(3856, 0.25, 160, randomSeededLiquidity);
     const mine = new MyOrderManager(book);
     let orderSize = 1;
     let renderIntervalMs = 0; // 0 = realtime
@@ -146,13 +149,19 @@ function bootstrap() {
         panelDirty = true;
     });
     renderer.init();
-    const mock = new MockDataGenerator(book, 70, onMarketEvent, {
-        addWeight: 0.42,
-        cancelWeight: 0.25,
-        tradeWeight: 0.33,
-        burstChance: 0.32,
-    });
-    mock.start();
+    const marketDataSource = sourceMode === 'binance'
+        ? new BinanceMarketDataSource(book, onMarketEvent, {
+            symbol: 'btcusdt',
+            tickSize: 0.0001,
+        })
+        : new MockDataGenerator(book, 70, onMarketEvent, {
+            addWeight: 0.42,
+            cancelWeight: 0.25,
+            tradeWeight: 0.33,
+            burstChance: 0.32,
+        });
+    marketDataSource.start();
+    console.info(`[MarketData] source started: ${marketDataSource.getName()}`);
     const loop = () => {
         const now = performance.now();
         const shouldRenderBook = renderIntervalMs === 0 || now - lastRenderAt >= renderIntervalMs;
@@ -166,5 +175,8 @@ function bootstrap() {
         requestAnimationFrame(loop);
     };
     loop();
+    window.addEventListener('beforeunload', () => {
+        marketDataSource.stop();
+    });
 }
 bootstrap();

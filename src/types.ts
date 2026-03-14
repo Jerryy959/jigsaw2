@@ -6,6 +6,9 @@ export interface BookEvent {
   price: number;
   size: number;
   timestamp: number;
+  // For venues where depth stream is authoritative (e.g. Binance depth + trade),
+  // set false to avoid reducing book size twice on trade + depth cancel.
+  impactsLiquidity?: boolean;
 }
 
 export interface BookLevel {
