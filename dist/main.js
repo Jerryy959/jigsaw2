@@ -116,26 +116,13 @@ function bootstrap() {
         </select>
       </div>
       <div class="footprint-control-grid">
-        <label for="fp-bucket">价格聚合</label>
+        <label for="fp-bucket">CUM价格聚合</label>
         <select id="fp-bucket" class="refresh-select">
           <option value="1" ${footprintBucketTicks === 1 ? 'selected' : ''}>1 tick</option>
           <option value="2" ${footprintBucketTicks === 2 ? 'selected' : ''}>2 ticks</option>
           <option value="5" ${footprintBucketTicks === 5 ? 'selected' : ''}>5 ticks</option>
         </select>
-        <label for="fp-window">时间窗口</label>
-        <select id="fp-window" class="refresh-select">
-          <option value="0" ${footprintWindowMs === 0 ? 'selected' : ''}>全量</option>
-          <option value="30000" ${footprintWindowMs === 30000 ? 'selected' : ''}>30秒</option>
-          <option value="60000" ${footprintWindowMs === 60000 ? 'selected' : ''}>60秒</option>
-          <option value="300000" ${footprintWindowMs === 300000 ? 'selected' : ''}>5分钟</option>
-        </select>
-        <label for="fp-decay">热力衰减</label>
-        <select id="fp-decay" class="refresh-select">
-          <option value="0" ${footprintDecayHalfLifeMs === 0 ? 'selected' : ''}>关闭</option>
-          <option value="5000" ${footprintDecayHalfLifeMs === 5000 ? 'selected' : ''}>半衰5秒</option>
-          <option value="15000" ${footprintDecayHalfLifeMs === 15000 ? 'selected' : ''}>半衰15秒</option>
-          <option value="60000" ${footprintDecayHalfLifeMs === 60000 ? 'selected' : ''}>半衰60秒</option>
-        </select>
+        <div class="footprint-hint" style="grid-column: 1 / -1;">会话累计模式：刷新页面归零，不刷新持续累计</div>
       </div>
       <div class="source-control-grid">
         <label for="source-mode">数据源</label>
@@ -206,15 +193,11 @@ function bootstrap() {
         if (select.id === 'fp-bucket') {
             footprintBucketTicks = Math.max(1, Number(select.value) || 1);
         }
-        else if (select.id === 'fp-window') {
-            footprintWindowMs = Math.max(0, Number(select.value) || 0);
-        }
-        else if (select.id === 'fp-decay') {
-            footprintDecayHalfLifeMs = Math.max(0, Number(select.value) || 0);
-        }
         else {
             return;
         }
+        footprintWindowMs = 0;
+        footprintDecayHalfLifeMs = 0;
         book.setFootprintDisplayConfig({
             bucketSizeTicks: footprintBucketTicks,
             timeWindowMs: footprintWindowMs,
@@ -261,6 +244,16 @@ function bootstrap() {
         panelDirty = true;
     });
     renderer.init();
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            renderer.recoverAfterTabSwitch();
+            panelDirty = true;
+        }
+    });
+    window.addEventListener('pageshow', () => {
+        renderer.recoverAfterTabSwitch();
+        panelDirty = true;
+    });
     const marketDataSource = sourceMode === 'realtime'
         ? createRealtimeSource(book, onMarketEvent, {
             exchange: exchange === 'bybit' ? 'bybit' : 'binance',

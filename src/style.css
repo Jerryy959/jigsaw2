@@ -274,3 +274,9 @@ canvas {
   color: #a9becc;
   align-items: center;
 }
+
+
+.footprint-hint {
+  font-size: 11px;
+  color: #89a2b7;
+}
