@@ -28,6 +28,19 @@ describe('OrderBook trade liquidity impact', () => {
 });
 
 describe('OrderBook price precision', () => {
+
+  it('keeps current price within visible ladder range after large symbol price jump', () => {
+    const book = new OrderBook(70000, 0.0001, 160, false);
+    book.setCurrentPrice(0.0655);
+
+    const prices = book.getPrices();
+    expect(prices).toContain(0.0655);
+
+    const sortedDesc = [...prices].sort((a, b) => b - a);
+    const currentIdx = sortedDesc.findIndex((price) => price === 0.0655);
+    expect(currentIdx).toBeGreaterThanOrEqual(56);
+    expect(currentIdx).toBeLessThanOrEqual(104);
+  });
   it('keeps small-price symbols at fine precision', () => {
     const book = new OrderBook(0.065, 0.0001, 20, false);
     book.applyEvent({ type: 'add', side: 'bid', price: 0.0654, size: 1, timestamp: 1 });
@@ -50,8 +63,10 @@ describe('OrderBook footprint display config', () => {
     const snapBucket = book.getSnapshot();
     const l101 = snapBucket.levels.find((l) => l.price === 101);
     const l102 = snapBucket.levels.find((l) => l.price === 102);
+    const l103 = snapBucket.levels.find((l) => l.price === 103);
     expect(Math.round((l101?.buyTraded ?? 0) * 1000) / 1000).toBe(15);
-    expect(Math.round((l102?.buyTraded ?? 0) * 1000) / 1000).toBe(15);
+    expect(Math.round((l102?.buyTraded ?? 0) * 1000) / 1000).toBe(30);
+    expect((l103?.buyTraded ?? 0)).toBeGreaterThanOrEqual(15);
 
     book.setFootprintDisplayConfig({ bucketSizeTicks: 1, timeWindowMs: 500, decayHalfLifeMs: 0 });
     const snapWindow = book.getSnapshot();

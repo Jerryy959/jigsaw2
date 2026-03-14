@@ -73,7 +73,37 @@ export class OrderBook {
         }
         const normalizedPrice = this.normalize(price);
         this.currentPrice = normalizedPrice;
-        this.getOrCreate(normalizedPrice);
+        this.alignLevelsAroundCurrentPrice(normalizedPrice);
+    }
+    alignLevelsAroundCurrentPrice(price) {
+        const now = Date.now();
+        const keepDistance = this.tickSize * this.depth;
+        const nextLevels = new Map();
+        for (const [levelPrice, level] of this.levels.entries()) {
+            const hasActivity = level.bidSize > 0 ||
+                level.askSize > 0 ||
+                level.buyTraded > 0 ||
+                level.sellTraded > 0 ||
+                level.buyFlashUntil > now ||
+                level.sellFlashUntil > now ||
+                level.bidFlashUntil > now ||
+                level.askFlashUntil > now;
+            const closeToCurrent = Math.abs(levelPrice - price) <= keepDistance;
+            if (hasActivity || closeToCurrent) {
+                nextLevels.set(levelPrice, level);
+            }
+        }
+        const half = Math.floor(this.depth / 2);
+        for (let i = -half; i <= half; i += 1) {
+            const levelPrice = this.normalize(price + i * this.tickSize);
+            if (!nextLevels.has(levelPrice)) {
+                nextLevels.set(levelPrice, this.createLevel(levelPrice));
+            }
+        }
+        this.levels.clear();
+        for (const [levelPrice, level] of nextLevels) {
+            this.levels.set(levelPrice, level);
+        }
     }
     setFootprintDisplayConfig(config) {
         this.displayConfig = {
@@ -215,6 +245,16 @@ export class OrderBook {
             };
         })
             .sort((a, b) => b.price - a.price);
+        let cumulativeSell = 0;
+        for (let i = 0; i < levels.length; i += 1) {
+            cumulativeSell += levels[i].sellTraded;
+            levels[i].sellTraded = cumulativeSell;
+        }
+        let cumulativeBuy = 0;
+        for (let i = levels.length - 1; i >= 0; i -= 1) {
+            cumulativeBuy += levels[i].buyTraded;
+            levels[i].buyTraded = cumulativeBuy;
+        }
         const bidCandidates = levels.filter((l) => l.bidSize > 0).map((l) => l.price);
         const askCandidates = levels.filter((l) => l.askSize > 0).map((l) => l.price);
         const bestBid = bidCandidates.length ? Math.max(...bidCandidates) : this.currentPrice;
