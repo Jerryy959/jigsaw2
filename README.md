@@ -12,15 +12,17 @@
 
 - 红蓝挂单柱（数量越大柱越长）
 - Footprint 累计成交（买卖分列）
+- Footprint 显示可配置：价格聚合桶 / 时间窗口累计 / 热力衰减
 - 主动成交高亮动画（200~500ms 闪烁）
 - 当前价格高亮 + 上下两行联动高亮
 - 鼠标点击下单/撤单（同价同侧已有我的挂单则撤单）
 - 我的挂单高亮 + 队列位置显示（#ahead+1）
 - 高频 Mock 数据（70ms，可 burst）
-- 鼠标滚轮上下滚动 price ladder
+- 鼠标滚轮上下滚动 price ladder（支持 Shift 加速、双击归中、Home 键归中）
 - 可选择订单簿刷新频率（实时 / 50 / 100 / 200 / 500 / 1000ms）
 - 右上角“我的挂单”面板（多行展示 + 按钮撤单 + 下单手数调节，默认1手）
 - 成交后弹出提示框（toast）显示已成交
+- 顶部大字号“最新成交价”看板 + 当前成交价行高亮
 
 ## 运行
 
@@ -31,7 +33,7 @@ python3 -m http.server 5173
 
 访问 <http://localhost:5173>
 
-如需接入 Binance 实时数据，使用 `http://localhost:5173?source=binance`。
+如需接入实时交易所数据，使用 `http://localhost:5173?source=realtime&exchange=binance&market=spot&symbol=btcusdt`。也支持 `exchange=bybit` 与 `market=futures`。
 
 ## 代码模块
 
@@ -40,8 +42,8 @@ python3 -m http.server 5173
 - `src/MockDataGenerator.ts`：可配置权重的 add/cancel/trade 随机流
 - `src/MockMatchingEngine.ts`：模拟后端撮合服务（价格扫到挂单后按队列触发成交）
 - `src/DOMRenderer.ts`：WebGL 绘制 + Canvas 文本层 + 点击/滚轮交互
-- `src/main.ts`：启动、事件桥接、渲染循环（支持 `source=mock|binance`）
-- `src/MarketDataSource.ts`：统一市场数据源接口 + Binance 适配器
+- `src/main.ts`：启动、事件桥接、渲染循环（支持 `source=mock|realtime`，可切换交易所/市场/币种）
+- `src/MarketDataSource.ts`：统一市场数据源接口 + Binance/Bybit 现货与期货适配器
 
 ## 真实交易所接入文档
 

@@ -1,30 +1,80 @@
 import { DOMRenderer } from './DOMRenderer.js';
-import { BinanceMarketDataSource } from './MarketDataSource.js';
+import { createRealtimeSource, resolveDefaultSymbol } from './MarketDataSource.js';
 import { MockDataGenerator } from './MockDataGenerator.js';
 import { MyOrderManager } from './MyOrderManager.js';
 import { MockMatchingEngine } from './MockMatchingEngine.js';
 import { OrderBook } from './OrderBook.js';
 import type { BookEvent, FillNotice, MyOrder, Side } from './types.js';
 
+const DEFAULT_REALTIME_TICK_SIZE = 0.0001;
+const DEFAULT_MOCK_TICK_SIZE = 0.25;
+
 function bootstrap(): void {
   const app = document.getElementById('app');
   const ordersPanel = document.getElementById('orders-panel');
   const toastRoot = document.getElementById('toast-root');
+  const latestPriceEl = document.getElementById('latest-price-value');
 
-  if (!app || !ordersPanel || !toastRoot) {
+  if (!app || !ordersPanel || !toastRoot || !latestPriceEl) {
     throw new Error('Missing root nodes');
   }
 
-  const sourceMode = new URLSearchParams(window.location.search).get('source') ?? 'mock';
-  const randomSeededLiquidity = sourceMode !== 'binance';
-  const book = new OrderBook(3856, 0.25, 160, randomSeededLiquidity);
+  const params = new URLSearchParams(window.location.search);
+  const sourceMode = params.get('source') ?? 'mock';
+  const exchange = params.get('exchange') ?? 'binance';
+  const market = params.get('market') ?? 'spot';
+  const symbol = params.get('symbol') ?? resolveDefaultSymbol(exchange === 'bybit' ? 'bybit' : 'binance', market === 'futures' ? 'futures' : 'spot');
+
+  const randomSeededLiquidity = sourceMode === 'mock';
+  const tickSize = Number(params.get('tickSize') ?? (sourceMode === 'realtime' ? DEFAULT_REALTIME_TICK_SIZE : DEFAULT_MOCK_TICK_SIZE));
+  const normalizedTick = Number.isFinite(tickSize) && tickSize > 0 ? tickSize : sourceMode === 'realtime' ? DEFAULT_REALTIME_TICK_SIZE : DEFAULT_MOCK_TICK_SIZE;
+  const centerPrice = Number(params.get('centerPrice') ?? (sourceMode === 'realtime' ? 1 : 3856));
+  const normalizedCenter = Number.isFinite(centerPrice) && centerPrice > 0 ? centerPrice : sourceMode === 'realtime' ? 1 : 3856;
+  const book = new OrderBook(normalizedCenter, normalizedTick, 160, randomSeededLiquidity);
   const mine = new MyOrderManager(book);
+  latestPriceEl.textContent = book.formatPrice(normalizedCenter);
 
   let orderSize = 1;
   let renderIntervalMs = 0; // 0 = realtime
+  let footprintBucketTicks = Number(params.get('fpBucketTicks') ?? '1');
+  let footprintWindowMs = Number(params.get('fpWindowMs') ?? '0');
+  let footprintDecayHalfLifeMs = Number(params.get('fpDecayHalfLifeMs') ?? '0');
+
+  footprintBucketTicks = Number.isFinite(footprintBucketTicks) && footprintBucketTicks > 0 ? Math.floor(footprintBucketTicks) : 1;
+  footprintWindowMs = Number.isFinite(footprintWindowMs) && footprintWindowMs >= 0 ? Math.floor(footprintWindowMs) : 0;
+  footprintDecayHalfLifeMs = Number.isFinite(footprintDecayHalfLifeMs) && footprintDecayHalfLifeMs >= 0 ? Math.floor(footprintDecayHalfLifeMs) : 0;
+
+  book.setFootprintDisplayConfig({
+    bucketSizeTicks: footprintBucketTicks,
+    timeWindowMs: footprintWindowMs,
+    decayHalfLifeMs: footprintDecayHalfLifeMs,
+  });
+
   let panelDirty = true;
   let lastOrdersVersion = -1;
   let lastRenderAt = 0;
+
+  const updateRouteWithSelection = (): void => {
+    const sourceSelect = document.getElementById('source-mode') as HTMLSelectElement | null;
+    const exchangeSelect = document.getElementById('exchange-mode') as HTMLSelectElement | null;
+    const marketSelect = document.getElementById('market-mode') as HTMLSelectElement | null;
+    const symbolInput = document.getElementById('symbol-input') as HTMLInputElement | null;
+
+    const next = new URLSearchParams(window.location.search);
+    if (sourceSelect) {
+      next.set('source', sourceSelect.value);
+    }
+    if (exchangeSelect) {
+      next.set('exchange', exchangeSelect.value);
+    }
+    if (marketSelect) {
+      next.set('market', marketSelect.value);
+    }
+    if (symbolInput?.value) {
+      next.set('symbol', symbolInput.value.trim());
+    }
+    window.location.search = next.toString();
+  };
 
   const showFillToast = (fill: FillNotice): void => {
     const item = document.createElement('div');
@@ -49,7 +99,7 @@ function bootstrap(): void {
           <div class="order-row ${sideClass}">
             <div class="order-main">
               <span class="tag">${sideText}</span>
-              <span>${o.price.toFixed(2)}</span>
+              <span>${book.formatPrice(o.price)}</span>
               <span>剩余:${o.remaining}</span>
               <span>排队:${queueRank}</span>
             </div>
@@ -80,6 +130,48 @@ function bootstrap(): void {
           <option value="1000" ${renderIntervalMs === 1000 ? 'selected' : ''}>1000ms</option>
         </select>
       </div>
+      <div class="footprint-control-grid">
+        <label for="fp-bucket">价格聚合</label>
+        <select id="fp-bucket" class="refresh-select">
+          <option value="1" ${footprintBucketTicks === 1 ? 'selected' : ''}>1 tick</option>
+          <option value="2" ${footprintBucketTicks === 2 ? 'selected' : ''}>2 ticks</option>
+          <option value="5" ${footprintBucketTicks === 5 ? 'selected' : ''}>5 ticks</option>
+        </select>
+        <label for="fp-window">时间窗口</label>
+        <select id="fp-window" class="refresh-select">
+          <option value="0" ${footprintWindowMs === 0 ? 'selected' : ''}>全量</option>
+          <option value="30000" ${footprintWindowMs === 30000 ? 'selected' : ''}>30秒</option>
+          <option value="60000" ${footprintWindowMs === 60000 ? 'selected' : ''}>60秒</option>
+          <option value="300000" ${footprintWindowMs === 300000 ? 'selected' : ''}>5分钟</option>
+        </select>
+        <label for="fp-decay">热力衰减</label>
+        <select id="fp-decay" class="refresh-select">
+          <option value="0" ${footprintDecayHalfLifeMs === 0 ? 'selected' : ''}>关闭</option>
+          <option value="5000" ${footprintDecayHalfLifeMs === 5000 ? 'selected' : ''}>半衰5秒</option>
+          <option value="15000" ${footprintDecayHalfLifeMs === 15000 ? 'selected' : ''}>半衰15秒</option>
+          <option value="60000" ${footprintDecayHalfLifeMs === 60000 ? 'selected' : ''}>半衰60秒</option>
+        </select>
+      </div>
+      <div class="source-control-grid">
+        <label for="source-mode">数据源</label>
+        <select id="source-mode" class="refresh-select">
+          <option value="mock" ${sourceMode === 'mock' ? 'selected' : ''}>Mock</option>
+          <option value="realtime" ${sourceMode === 'realtime' ? 'selected' : ''}>Realtime</option>
+        </select>
+        <label for="exchange-mode">交易所</label>
+        <select id="exchange-mode" class="refresh-select">
+          <option value="binance" ${exchange === 'binance' ? 'selected' : ''}>Binance</option>
+          <option value="bybit" ${exchange === 'bybit' ? 'selected' : ''}>Bybit</option>
+        </select>
+        <label for="market-mode">市场</label>
+        <select id="market-mode" class="refresh-select">
+          <option value="spot" ${market === 'spot' ? 'selected' : ''}>现货</option>
+          <option value="futures" ${market === 'futures' ? 'selected' : ''}>期货</option>
+        </select>
+        <label for="symbol-input">币种</label>
+        <input id="symbol-input" class="symbol-input" value="${symbol}" />
+        <button id="apply-source-config" class="apply-btn" type="button">应用配置</button>
+      </div>
       <div class="orders-body">${rows || '<div class="order-empty">暂无挂单</div>'}</div>
     `;
 
@@ -89,6 +181,7 @@ function bootstrap(): void {
 
   const applyEvent = (event: BookEvent): void => {
     book.applyEvent(event);
+    latestPriceEl.textContent = book.formatPrice(book.getSnapshot().currentPrice);
     const fills = mine.onBookEvent(event);
     fills.forEach(showFillToast);
     if (mine.getVersion() !== lastOrdersVersion) {
@@ -122,17 +215,44 @@ function bootstrap(): void {
 
   ordersPanel.addEventListener('change', (ev: Event) => {
     const target = ev.target as HTMLElement;
-    const select = target.closest('.refresh-select') as HTMLSelectElement | null;
+    const select = target.closest('select') as HTMLSelectElement | null;
     if (!select) {
       return;
     }
-    renderIntervalMs = Number(select.value);
+
+    if (select.id === 'refresh-mode') {
+      renderIntervalMs = Number(select.value);
+      panelDirty = true;
+      return;
+    }
+
+    if (select.id === 'fp-bucket') {
+      footprintBucketTicks = Math.max(1, Number(select.value) || 1);
+    } else if (select.id === 'fp-window') {
+      footprintWindowMs = Math.max(0, Number(select.value) || 0);
+    } else if (select.id === 'fp-decay') {
+      footprintDecayHalfLifeMs = Math.max(0, Number(select.value) || 0);
+    } else {
+      return;
+    }
+
+    book.setFootprintDisplayConfig({
+      bucketSizeTicks: footprintBucketTicks,
+      timeWindowMs: footprintWindowMs,
+      decayHalfLifeMs: footprintDecayHalfLifeMs,
+    });
     panelDirty = true;
   });
 
   ordersPanel.addEventListener('click', (ev: MouseEvent) => {
     ev.stopPropagation();
     const target = ev.target as HTMLElement;
+
+    const applyButton = target.closest('#apply-source-config') as HTMLButtonElement | null;
+    if (applyButton) {
+      updateRouteWithSelection();
+      return;
+    }
 
     const sizeBtn = target.closest('.size-btn') as HTMLButtonElement | null;
     if (sizeBtn) {
@@ -170,10 +290,12 @@ function bootstrap(): void {
   renderer.init();
 
   const marketDataSource =
-    sourceMode === 'binance'
-      ? new BinanceMarketDataSource(book, onMarketEvent, {
-          symbol: 'btcusdt',
-          tickSize: 0.0001,
+    sourceMode === 'realtime'
+      ? createRealtimeSource(book, onMarketEvent, {
+          exchange: exchange === 'bybit' ? 'bybit' : 'binance',
+          market: market === 'futures' ? 'futures' : 'spot',
+          symbol,
+          tickSize: normalizedTick,
         })
       : new MockDataGenerator(book, 70, onMarketEvent, {
           addWeight: 0.42,
