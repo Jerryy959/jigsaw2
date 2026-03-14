@@ -192,7 +192,7 @@ export class DOMRenderer {
         ctx.fillText('ASK BOOK', this.colAskBook + 45, 24);
         ctx.fillStyle = '#89a2b7';
         ctx.font = '11px sans-serif';
-        ctx.fillText(`滚轮滚动 / Shift+滚轮加速 / Home归中  偏移:${this.scrollOffset}`, 560, 24);
+        ctx.fillText(`滚轮滚动 / Shift加速 / Home归中 / 偏移:${this.scrollOffset}`, 370, 40);
         ctx.font = '15px monospace';
         levels.forEach((l, i) => {
             const y = this.top + i * this.rowH + 15;

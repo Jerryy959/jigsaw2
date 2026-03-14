@@ -23,6 +23,12 @@ export interface BookLevel {
   askFlashUntil: number;
 }
 
+export interface FootprintDisplayConfig {
+  bucketSizeTicks: number;
+  timeWindowMs: number;
+  decayHalfLifeMs: number;
+}
+
 export interface MyOrder {
   id: string;
   side: Side;

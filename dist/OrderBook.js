@@ -5,6 +5,12 @@ export class OrderBook {
         this.depth = depth;
         this.randomSeededLiquidity = randomSeededLiquidity;
         this.levels = new Map();
+        this.tradePrints = [];
+        this.displayConfig = {
+            bucketSizeTicks: 1,
+            timeWindowMs: 0,
+            decayHalfLifeMs: 0,
+        };
         this.tickDecimals = this.resolveTickDecimals(tickSize);
         this.currentPrice = this.normalize(centerPrice);
         this.seed();
@@ -67,6 +73,14 @@ export class OrderBook {
         }
         this.currentPrice = this.normalize(price);
     }
+    setFootprintDisplayConfig(config) {
+        this.displayConfig = {
+            bucketSizeTicks: Math.max(1, Math.floor(config.bucketSizeTicks ?? this.displayConfig.bucketSizeTicks)),
+            timeWindowMs: Math.max(0, Math.floor(config.timeWindowMs ?? this.displayConfig.timeWindowMs)),
+            decayHalfLifeMs: Math.max(0, Math.floor(config.decayHalfLifeMs ?? this.displayConfig.decayHalfLifeMs)),
+        };
+        this.pruneTrades(Date.now());
+    }
     getOrCreate(price) {
         const key = this.normalize(price);
         const l = this.levels.get(key);
@@ -106,7 +120,6 @@ export class OrderBook {
             if (impactsLiquidity) {
                 level.askSize = Math.max(0, level.askSize - event.size);
             }
-            level.buyTraded += event.size;
             level.buyFlashUntil = now + flashMs;
             level.askFlashUntil = now + flashMs;
         }
@@ -114,9 +127,31 @@ export class OrderBook {
             if (impactsLiquidity) {
                 level.bidSize = Math.max(0, level.bidSize - event.size);
             }
-            level.sellTraded += event.size;
             level.sellFlashUntil = now + flashMs;
             level.bidFlashUntil = now + flashMs;
+        }
+        this.tradePrints.push({
+            price: this.normalize(event.price),
+            side: event.side,
+            size: event.size,
+            timestamp: now,
+        });
+        this.pruneTrades(now);
+    }
+    pruneTrades(now) {
+        const windowRetain = this.displayConfig.timeWindowMs > 0 ? this.displayConfig.timeWindowMs * 2 : 0;
+        const decayRetain = this.displayConfig.decayHalfLifeMs > 0 ? this.displayConfig.decayHalfLifeMs * 8 : 0;
+        const maxRetainMs = Math.max(windowRetain, decayRetain, 10 * 60000);
+        const threshold = now - maxRetainMs;
+        let deleteCount = 0;
+        while (deleteCount < this.tradePrints.length && this.tradePrints[deleteCount].timestamp < threshold) {
+            deleteCount += 1;
+        }
+        if (deleteCount > 0) {
+            this.tradePrints.splice(0, deleteCount);
+        }
+        if (this.tradePrints.length > 30000) {
+            this.tradePrints.splice(0, this.tradePrints.length - 30000);
         }
     }
     getLiquidity(price, side) {
@@ -129,8 +164,55 @@ export class OrderBook {
     getPrices() {
         return [...this.levels.keys()].sort((a, b) => a - b);
     }
+    resolveBucketPrice(price) {
+        const bucketTickSize = this.tickSize * this.displayConfig.bucketSizeTicks;
+        const bucketPrice = Math.round(price / bucketTickSize) * bucketTickSize;
+        return Number(bucketPrice.toFixed(this.tickDecimals));
+    }
+    getTradeDecayFactor(ageMs) {
+        if (this.displayConfig.decayHalfLifeMs <= 0) {
+            return 1;
+        }
+        return Math.pow(0.5, ageMs / this.displayConfig.decayHalfLifeMs);
+    }
+    projectTradeTotals(now) {
+        const byBucket = new Map();
+        for (const trade of this.tradePrints) {
+            const ageMs = now - trade.timestamp;
+            if (this.displayConfig.timeWindowMs > 0 && ageMs > this.displayConfig.timeWindowMs) {
+                continue;
+            }
+            const weight = this.getTradeDecayFactor(Math.max(0, ageMs));
+            const weightedSize = trade.size * weight;
+            if (weightedSize <= 0) {
+                continue;
+            }
+            const bucketPrice = this.resolveBucketPrice(trade.price);
+            const bucket = byBucket.get(bucketPrice) ?? { buy: 0, sell: 0 };
+            if (trade.side === 'bid') {
+                bucket.buy += weightedSize;
+            }
+            else {
+                bucket.sell += weightedSize;
+            }
+            byBucket.set(bucketPrice, bucket);
+        }
+        return byBucket;
+    }
     getSnapshot() {
-        const levels = [...this.levels.values()].sort((a, b) => b.price - a.price);
+        const now = Date.now();
+        const projectedTrades = this.projectTradeTotals(now);
+        const levels = [...this.levels.values()]
+            .map((level) => {
+            const bucketPrice = this.resolveBucketPrice(level.price);
+            const bucket = projectedTrades.get(bucketPrice);
+            return {
+                ...level,
+                buyTraded: bucket?.buy ?? 0,
+                sellTraded: bucket?.sell ?? 0,
+            };
+        })
+            .sort((a, b) => b.price - a.price);
         const bidCandidates = levels.filter((l) => l.bidSize > 0).map((l) => l.price);
         const askCandidates = levels.filter((l) => l.askSize > 0).map((l) => l.price);
         const bestBid = bidCandidates.length ? Math.max(...bidCandidates) : this.currentPrice;

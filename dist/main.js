@@ -29,6 +29,17 @@ function bootstrap() {
     latestPriceEl.textContent = book.formatPrice(normalizedCenter);
     let orderSize = 1;
     let renderIntervalMs = 0; // 0 = realtime
+    let footprintBucketTicks = Number(params.get('fpBucketTicks') ?? '1');
+    let footprintWindowMs = Number(params.get('fpWindowMs') ?? '0');
+    let footprintDecayHalfLifeMs = Number(params.get('fpDecayHalfLifeMs') ?? '0');
+    footprintBucketTicks = Number.isFinite(footprintBucketTicks) && footprintBucketTicks > 0 ? Math.floor(footprintBucketTicks) : 1;
+    footprintWindowMs = Number.isFinite(footprintWindowMs) && footprintWindowMs >= 0 ? Math.floor(footprintWindowMs) : 0;
+    footprintDecayHalfLifeMs = Number.isFinite(footprintDecayHalfLifeMs) && footprintDecayHalfLifeMs >= 0 ? Math.floor(footprintDecayHalfLifeMs) : 0;
+    book.setFootprintDisplayConfig({
+        bucketSizeTicks: footprintBucketTicks,
+        timeWindowMs: footprintWindowMs,
+        decayHalfLifeMs: footprintDecayHalfLifeMs,
+    });
     let panelDirty = true;
     let lastOrdersVersion = -1;
     let lastRenderAt = 0;
@@ -74,7 +85,7 @@ function bootstrap() {
           <div class="order-row ${sideClass}">
             <div class="order-main">
               <span class="tag">${sideText}</span>
-              <span>${o.price.toFixed(2)}</span>
+              <span>${book.formatPrice(o.price)}</span>
               <span>剩余:${o.remaining}</span>
               <span>排队:${queueRank}</span>
             </div>
@@ -102,6 +113,28 @@ function bootstrap() {
           <option value="200" ${renderIntervalMs === 200 ? 'selected' : ''}>200ms</option>
           <option value="500" ${renderIntervalMs === 500 ? 'selected' : ''}>500ms</option>
           <option value="1000" ${renderIntervalMs === 1000 ? 'selected' : ''}>1000ms</option>
+        </select>
+      </div>
+      <div class="footprint-control-grid">
+        <label for="fp-bucket">价格聚合</label>
+        <select id="fp-bucket" class="refresh-select">
+          <option value="1" ${footprintBucketTicks === 1 ? 'selected' : ''}>1 tick</option>
+          <option value="2" ${footprintBucketTicks === 2 ? 'selected' : ''}>2 ticks</option>
+          <option value="5" ${footprintBucketTicks === 5 ? 'selected' : ''}>5 ticks</option>
+        </select>
+        <label for="fp-window">时间窗口</label>
+        <select id="fp-window" class="refresh-select">
+          <option value="0" ${footprintWindowMs === 0 ? 'selected' : ''}>全量</option>
+          <option value="30000" ${footprintWindowMs === 30000 ? 'selected' : ''}>30秒</option>
+          <option value="60000" ${footprintWindowMs === 60000 ? 'selected' : ''}>60秒</option>
+          <option value="300000" ${footprintWindowMs === 300000 ? 'selected' : ''}>5分钟</option>
+        </select>
+        <label for="fp-decay">热力衰减</label>
+        <select id="fp-decay" class="refresh-select">
+          <option value="0" ${footprintDecayHalfLifeMs === 0 ? 'selected' : ''}>关闭</option>
+          <option value="5000" ${footprintDecayHalfLifeMs === 5000 ? 'selected' : ''}>半衰5秒</option>
+          <option value="15000" ${footprintDecayHalfLifeMs === 15000 ? 'selected' : ''}>半衰15秒</option>
+          <option value="60000" ${footprintDecayHalfLifeMs === 60000 ? 'selected' : ''}>半衰60秒</option>
         </select>
       </div>
       <div class="source-control-grid">
@@ -161,11 +194,32 @@ function bootstrap() {
     };
     ordersPanel.addEventListener('change', (ev) => {
         const target = ev.target;
-        const select = target.closest('.refresh-select');
-        if (!select || select.id !== 'refresh-mode') {
+        const select = target.closest('select');
+        if (!select) {
             return;
         }
-        renderIntervalMs = Number(select.value);
+        if (select.id === 'refresh-mode') {
+            renderIntervalMs = Number(select.value);
+            panelDirty = true;
+            return;
+        }
+        if (select.id === 'fp-bucket') {
+            footprintBucketTicks = Math.max(1, Number(select.value) || 1);
+        }
+        else if (select.id === 'fp-window') {
+            footprintWindowMs = Math.max(0, Number(select.value) || 0);
+        }
+        else if (select.id === 'fp-decay') {
+            footprintDecayHalfLifeMs = Math.max(0, Number(select.value) || 0);
+        }
+        else {
+            return;
+        }
+        book.setFootprintDisplayConfig({
+            bucketSizeTicks: footprintBucketTicks,
+            timeWindowMs: footprintWindowMs,
+            decayHalfLifeMs: footprintDecayHalfLifeMs,
+        });
         panelDirty = true;
     });
     ordersPanel.addEventListener('click', (ev) => {
