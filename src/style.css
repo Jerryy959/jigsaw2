@@ -204,3 +204,39 @@ body {
 canvas {
   display: block;
 }
+
+.source-control-grid {
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 6px;
+  border: 1px solid #2d3b46;
+  background: #111d27;
+  padding: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #a9becc;
+  align-items: center;
+}
+
+.symbol-input {
+  border: 1px solid #425462;
+  background: #243340;
+  color: #d7e6ef;
+  font-size: 12px;
+  padding: 3px 5px;
+  width: 100%;
+}
+
+.apply-btn {
+  grid-column: 1 / -1;
+  border: 1px solid #3f5f82;
+  background: #274262;
+  color: #dcedff;
+  font-size: 12px;
+  padding: 5px 8px;
+  cursor: pointer;
+}
+
+.apply-btn:hover {
+  background: #2f5279;
+}

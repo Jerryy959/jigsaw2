@@ -7,10 +7,14 @@ export interface MarketDataSource {
   getName(): string;
 }
 
-export interface BinanceSourceConfig {
+export type Exchange = 'binance' | 'bybit';
+export type MarketType = 'spot' | 'futures';
+
+export interface RealtimeSourceConfig {
+  exchange: Exchange;
+  market: MarketType;
   symbol: string;
   tickSize: number;
-  wsBaseUrl?: string;
 }
 
 interface DepthState {
@@ -29,68 +33,123 @@ interface BinanceTradeMessage {
   m?: boolean;
 }
 
-export class BinanceMarketDataSource implements MarketDataSource {
-  private readonly depthState: DepthState = { bid: new Map(), ask: new Map() };
-  private depthSocket: WebSocket | null = null;
-  private tradeSocket: WebSocket | null = null;
+interface BybitOrderBookMessage {
+  topic?: string;
+  type?: 'snapshot' | 'delta';
+  data?: {
+    b?: Array<[string, string]>;
+    a?: Array<[string, string]>;
+  };
+}
 
-  constructor(
-    private readonly orderBook: OrderBook,
-    private readonly onEvent: (event: BookEvent) => void,
-    private readonly config: BinanceSourceConfig
-  ) {}
+interface BybitTradeMessage {
+  topic?: string;
+  data?: Array<{
+    p?: string;
+    v?: string;
+    S?: 'Buy' | 'Sell';
+  }>;
+}
 
-  public getName(): string {
-    return `binance:${this.config.symbol.toUpperCase()}`;
+interface SourceRuntimeDeps {
+  orderBook: OrderBook;
+  onEvent: (event: BookEvent) => void;
+  symbol: string;
+  tickSize: number;
+}
+
+interface OrderBookUpdates {
+  bids: Array<[string, string]>;
+  asks: Array<[string, string]>;
+  resetState: boolean;
+}
+
+interface TradePayload {
+  price: string;
+  size: string;
+  aggressiveSide: Side;
+}
+
+export function resolveDefaultSymbol(exchange: Exchange, market: MarketType): string {
+  if (exchange === 'bybit' && market === 'futures') {
+    return 'BTCUSDT';
   }
+  return 'btcusdt';
+}
+
+function normalizeSymbol(exchange: Exchange, symbol: string): string {
+  return exchange === 'binance' ? symbol.toLowerCase() : symbol.toUpperCase();
+}
+
+abstract class BaseRealtimeSource implements MarketDataSource {
+  private readonly depthState: DepthState = { bid: new Map(), ask: new Map() };
+  private sockets: WebSocket[] = [];
+
+  constructor(protected readonly deps: SourceRuntimeDeps) {}
 
   public start(): void {
-    if (this.depthSocket || this.tradeSocket) {
+    if (this.sockets.length > 0) {
       return;
     }
-
-    const wsBase = this.config.wsBaseUrl ?? 'wss://stream.binance.com:9443/ws';
-    const symbol = this.config.symbol.toLowerCase();
-
-    this.depthSocket = this.openSocket(`${wsBase}/${symbol}@depth@100ms`, (payload) => {
-      this.handleDepth(payload as BinanceDepthMessage);
-    });
-
-    this.tradeSocket = this.openSocket(`${wsBase}/${symbol}@trade`, (payload) => {
-      this.handleTrade(payload as BinanceTradeMessage);
-    });
+    this.sockets = this.createSockets();
   }
 
   public stop(): void {
-    this.depthSocket?.close();
-    this.tradeSocket?.close();
-    this.depthSocket = null;
-    this.tradeSocket = null;
+    this.sockets.forEach((socket) => socket.close());
+    this.sockets = [];
     this.depthState.bid.clear();
     this.depthState.ask.clear();
   }
 
-  private openSocket(url: string, onData: (payload: unknown) => void): WebSocket {
+  public abstract getName(): string;
+
+  protected abstract createSockets(): WebSocket[];
+
+  protected openSocket(url: string, onData: (payload: unknown) => void, onOpen?: (socket: WebSocket) => void): WebSocket {
     const socket = new WebSocket(url);
+    socket.onopen = () => {
+      onOpen?.(socket);
+    };
     socket.onmessage = (event: MessageEvent<string>): void => {
       try {
         onData(JSON.parse(event.data) as unknown);
       } catch (error) {
-        console.warn('[BinanceMarketDataSource] payload parse failed', error);
+        console.warn(`[${this.getName()}] payload parse failed`, error);
       }
     };
     socket.onerror = (error: Event): void => {
-      console.error('[BinanceMarketDataSource] websocket error', error);
+      console.error(`[${this.getName()}] websocket error`, error);
     };
     socket.onclose = (): void => {
-      console.warn('[BinanceMarketDataSource] websocket closed:', url);
+      console.warn(`[${this.getName()}] websocket closed:`, url);
     };
     return socket;
   }
 
-  private handleDepth(message: BinanceDepthMessage): void {
-    this.applyDepthSide('bid', message.b ?? []);
-    this.applyDepthSide('ask', message.a ?? []);
+  protected applyOrderBookUpdates(message: OrderBookUpdates): void {
+    if (message.resetState) {
+      this.depthState.bid.clear();
+      this.depthState.ask.clear();
+    }
+    this.applyDepthSide('bid', message.bids);
+    this.applyDepthSide('ask', message.asks);
+  }
+
+  protected applyTrade(payload: TradePayload): void {
+    const rawPrice = Number(payload.price);
+    const rawSize = Number(payload.size);
+    if (!Number.isFinite(rawPrice) || !Number.isFinite(rawSize)) {
+      return;
+    }
+
+    this.deps.onEvent({
+      type: 'trade',
+      side: payload.aggressiveSide,
+      price: this.deps.orderBook.normalize(rawPrice),
+      size: this.normalizeToTick(rawSize),
+      timestamp: Date.now(),
+      impactsLiquidity: false,
+    });
   }
 
   private applyDepthSide(side: Side, updates: Array<[string, string]>): void {
@@ -103,7 +162,7 @@ export class BinanceMarketDataSource implements MarketDataSource {
         continue;
       }
 
-      const price = this.orderBook.normalize(rawPrice);
+      const price = this.deps.orderBook.normalize(rawPrice);
       const previous = sideState.get(price) ?? 0;
       if (nextSize === previous) {
         continue;
@@ -114,9 +173,9 @@ export class BinanceMarketDataSource implements MarketDataSource {
       const delta = normalizedNext - normalizedPrev;
 
       if (delta > 0) {
-        this.onEvent({ type: 'add', side, price, size: delta, timestamp: Date.now() });
+        this.deps.onEvent({ type: 'add', side, price, size: delta, timestamp: Date.now() });
       } else {
-        this.onEvent({ type: 'cancel', side, price, size: Math.abs(delta), timestamp: Date.now() });
+        this.deps.onEvent({ type: 'cancel', side, price, size: Math.abs(delta), timestamp: Date.now() });
       }
 
       if (nextSize <= 0) {
@@ -127,26 +186,127 @@ export class BinanceMarketDataSource implements MarketDataSource {
     }
   }
 
-  private handleTrade(message: BinanceTradeMessage): void {
-    const rawPrice = Number(message.p);
-    const rawSize = Number(message.q);
-    if (!Number.isFinite(rawPrice) || !Number.isFinite(rawSize)) {
-      return;
-    }
+  protected normalizeToTick(size: number): number {
+    return Math.max(0, Number((size / this.deps.tickSize).toFixed(4)));
+  }
+}
 
-    // Binance `m=true` means buyer is maker, so aggressive side is sell.
-    const side: Side = message.m ? 'ask' : 'bid';
-    this.onEvent({
-      type: 'trade',
-      side,
-      price: this.orderBook.normalize(rawPrice),
-      size: this.normalizeToTick(rawSize),
-      timestamp: Date.now(),
-      impactsLiquidity: false,
+export class BinanceMarketDataSource extends BaseRealtimeSource {
+  private readonly wsBaseUrl: string;
+
+  constructor(
+    orderBook: OrderBook,
+    onEvent: (event: BookEvent) => void,
+    private readonly config: { symbol: string; tickSize: number; market: MarketType; wsBaseUrl?: string }
+  ) {
+    super({ orderBook, onEvent, symbol: config.symbol.toLowerCase(), tickSize: config.tickSize });
+    this.wsBaseUrl = config.wsBaseUrl ?? (config.market === 'futures' ? 'wss://fstream.binance.com/ws' : 'wss://stream.binance.com:9443/ws');
+  }
+
+  public getName(): string {
+    return `binance:${this.config.market}:${this.deps.symbol.toUpperCase()}`;
+  }
+
+  protected createSockets(): WebSocket[] {
+    const depthSocket = this.openSocket(`${this.wsBaseUrl}/${this.deps.symbol}@depth@100ms`, (payload) => {
+      const message = payload as BinanceDepthMessage;
+      this.applyOrderBookUpdates({ bids: message.b ?? [], asks: message.a ?? [], resetState: false });
+    });
+
+    const tradeSocket = this.openSocket(`${this.wsBaseUrl}/${this.deps.symbol}@trade`, (payload) => {
+      const message = payload as BinanceTradeMessage;
+      this.applyTrade({
+        price: message.p ?? '',
+        size: message.q ?? '',
+        // Binance `m=true` means buyer is maker, so aggressive side is sell.
+        aggressiveSide: message.m ? 'ask' : 'bid',
+      });
+    });
+
+    return [depthSocket, tradeSocket];
+  }
+}
+
+export class BybitMarketDataSource extends BaseRealtimeSource {
+  private readonly wsBaseUrl: string;
+
+  constructor(
+    orderBook: OrderBook,
+    onEvent: (event: BookEvent) => void,
+    private readonly config: { symbol: string; tickSize: number; market: MarketType; wsBaseUrl?: string }
+  ) {
+    super({ orderBook, onEvent, symbol: config.symbol.toUpperCase(), tickSize: config.tickSize });
+    const marketChannel = config.market === 'futures' ? 'linear' : 'spot';
+    this.wsBaseUrl = config.wsBaseUrl ?? `wss://stream.bybit.com/v5/public/${marketChannel}`;
+  }
+
+  public getName(): string {
+    return `bybit:${this.config.market}:${this.deps.symbol}`;
+  }
+
+  protected createSockets(): WebSocket[] {
+    const depthTopic = `orderbook.50.${this.deps.symbol}`;
+    const tradeTopic = `publicTrade.${this.deps.symbol}`;
+
+    const depthSocket = this.openSocket(
+      this.wsBaseUrl,
+      (payload) => {
+        const message = payload as BybitOrderBookMessage;
+        if (message.topic !== depthTopic || !message.data) {
+          return;
+        }
+        this.applyOrderBookUpdates({
+          bids: message.data.b ?? [],
+          asks: message.data.a ?? [],
+          resetState: message.type === 'snapshot',
+        });
+      },
+      (socket) => {
+        socket.send(JSON.stringify({ op: 'subscribe', args: [depthTopic] }));
+      }
+    );
+
+    const tradeSocket = this.openSocket(
+      this.wsBaseUrl,
+      (payload) => {
+        const message = payload as BybitTradeMessage;
+        if (message.topic !== tradeTopic || !message.data) {
+          return;
+        }
+        for (const trade of message.data) {
+          this.applyTrade({
+            price: trade.p ?? '',
+            size: trade.v ?? '',
+            aggressiveSide: trade.S === 'Sell' ? 'ask' : 'bid',
+          });
+        }
+      },
+      (socket) => {
+        socket.send(JSON.stringify({ op: 'subscribe', args: [tradeTopic] }));
+      }
+    );
+
+    return [depthSocket, tradeSocket];
+  }
+}
+
+export function createRealtimeSource(
+  orderBook: OrderBook,
+  onEvent: (event: BookEvent) => void,
+  config: RealtimeSourceConfig
+): MarketDataSource {
+  const normalizedSymbol = normalizeSymbol(config.exchange, config.symbol);
+  if (config.exchange === 'bybit') {
+    return new BybitMarketDataSource(orderBook, onEvent, {
+      symbol: normalizedSymbol,
+      tickSize: config.tickSize,
+      market: config.market,
     });
   }
 
-  private normalizeToTick(size: number): number {
-    return Math.max(0, Number((size / this.config.tickSize).toFixed(4)));
-  }
+  return new BinanceMarketDataSource(orderBook, onEvent, {
+    symbol: normalizedSymbol,
+    tickSize: config.tickSize,
+    market: config.market,
+  });
 }

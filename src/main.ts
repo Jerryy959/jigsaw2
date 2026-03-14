@@ -1,10 +1,12 @@
 import { DOMRenderer } from './DOMRenderer.js';
-import { BinanceMarketDataSource } from './MarketDataSource.js';
+import { createRealtimeSource, resolveDefaultSymbol } from './MarketDataSource.js';
 import { MockDataGenerator } from './MockDataGenerator.js';
 import { MyOrderManager } from './MyOrderManager.js';
 import { MockMatchingEngine } from './MockMatchingEngine.js';
 import { OrderBook } from './OrderBook.js';
 import type { BookEvent, FillNotice, MyOrder, Side } from './types.js';
+
+const DEFAULT_TICK_SIZE = 0.0001;
 
 function bootstrap(): void {
   const app = document.getElementById('app');
@@ -15,8 +17,13 @@ function bootstrap(): void {
     throw new Error('Missing root nodes');
   }
 
-  const sourceMode = new URLSearchParams(window.location.search).get('source') ?? 'mock';
-  const randomSeededLiquidity = sourceMode !== 'binance';
+  const params = new URLSearchParams(window.location.search);
+  const sourceMode = params.get('source') ?? 'mock';
+  const exchange = params.get('exchange') ?? 'binance';
+  const market = params.get('market') ?? 'spot';
+  const symbol = params.get('symbol') ?? resolveDefaultSymbol(exchange === 'bybit' ? 'bybit' : 'binance', market === 'futures' ? 'futures' : 'spot');
+
+  const randomSeededLiquidity = sourceMode === 'mock';
   const book = new OrderBook(3856, 0.25, 160, randomSeededLiquidity);
   const mine = new MyOrderManager(book);
 
@@ -25,6 +32,28 @@ function bootstrap(): void {
   let panelDirty = true;
   let lastOrdersVersion = -1;
   let lastRenderAt = 0;
+
+  const updateRouteWithSelection = (): void => {
+    const sourceSelect = document.getElementById('source-mode') as HTMLSelectElement | null;
+    const exchangeSelect = document.getElementById('exchange-mode') as HTMLSelectElement | null;
+    const marketSelect = document.getElementById('market-mode') as HTMLSelectElement | null;
+    const symbolInput = document.getElementById('symbol-input') as HTMLInputElement | null;
+
+    const next = new URLSearchParams(window.location.search);
+    if (sourceSelect) {
+      next.set('source', sourceSelect.value);
+    }
+    if (exchangeSelect) {
+      next.set('exchange', exchangeSelect.value);
+    }
+    if (marketSelect) {
+      next.set('market', marketSelect.value);
+    }
+    if (symbolInput?.value) {
+      next.set('symbol', symbolInput.value.trim());
+    }
+    window.location.search = next.toString();
+  };
 
   const showFillToast = (fill: FillNotice): void => {
     const item = document.createElement('div');
@@ -80,6 +109,26 @@ function bootstrap(): void {
           <option value="1000" ${renderIntervalMs === 1000 ? 'selected' : ''}>1000ms</option>
         </select>
       </div>
+      <div class="source-control-grid">
+        <label for="source-mode">数据源</label>
+        <select id="source-mode" class="refresh-select">
+          <option value="mock" ${sourceMode === 'mock' ? 'selected' : ''}>Mock</option>
+          <option value="realtime" ${sourceMode === 'realtime' ? 'selected' : ''}>Realtime</option>
+        </select>
+        <label for="exchange-mode">交易所</label>
+        <select id="exchange-mode" class="refresh-select">
+          <option value="binance" ${exchange === 'binance' ? 'selected' : ''}>Binance</option>
+          <option value="bybit" ${exchange === 'bybit' ? 'selected' : ''}>Bybit</option>
+        </select>
+        <label for="market-mode">市场</label>
+        <select id="market-mode" class="refresh-select">
+          <option value="spot" ${market === 'spot' ? 'selected' : ''}>现货</option>
+          <option value="futures" ${market === 'futures' ? 'selected' : ''}>期货</option>
+        </select>
+        <label for="symbol-input">币种</label>
+        <input id="symbol-input" class="symbol-input" value="${symbol}" />
+        <button id="apply-source-config" class="apply-btn" type="button">应用配置</button>
+      </div>
       <div class="orders-body">${rows || '<div class="order-empty">暂无挂单</div>'}</div>
     `;
 
@@ -123,7 +172,7 @@ function bootstrap(): void {
   ordersPanel.addEventListener('change', (ev: Event) => {
     const target = ev.target as HTMLElement;
     const select = target.closest('.refresh-select') as HTMLSelectElement | null;
-    if (!select) {
+    if (!select || select.id !== 'refresh-mode') {
       return;
     }
     renderIntervalMs = Number(select.value);
@@ -133,6 +182,12 @@ function bootstrap(): void {
   ordersPanel.addEventListener('click', (ev: MouseEvent) => {
     ev.stopPropagation();
     const target = ev.target as HTMLElement;
+
+    const applyButton = target.closest('#apply-source-config') as HTMLButtonElement | null;
+    if (applyButton) {
+      updateRouteWithSelection();
+      return;
+    }
 
     const sizeBtn = target.closest('.size-btn') as HTMLButtonElement | null;
     if (sizeBtn) {
@@ -170,10 +225,12 @@ function bootstrap(): void {
   renderer.init();
 
   const marketDataSource =
-    sourceMode === 'binance'
-      ? new BinanceMarketDataSource(book, onMarketEvent, {
-          symbol: 'btcusdt',
-          tickSize: 0.0001,
+    sourceMode === 'realtime'
+      ? createRealtimeSource(book, onMarketEvent, {
+          exchange: exchange === 'bybit' ? 'bybit' : 'binance',
+          market: market === 'futures' ? 'futures' : 'spot',
+          symbol,
+          tickSize: DEFAULT_TICK_SIZE,
         })
       : new MockDataGenerator(book, 70, onMarketEvent, {
           addWeight: 0.42,

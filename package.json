@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "serve": "python3 -m http.server 5173"
+    "serve": "python3 -m http.server 5173",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
   }
 }

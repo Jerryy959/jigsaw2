@@ -31,7 +31,7 @@ python3 -m http.server 5173
 
 访问 <http://localhost:5173>
 
-如需接入 Binance 实时数据，使用 `http://localhost:5173?source=binance`。
+如需接入实时交易所数据，使用 `http://localhost:5173?source=realtime&exchange=binance&market=spot&symbol=btcusdt`。也支持 `exchange=bybit` 与 `market=futures`。
 
 ## 代码模块
 
@@ -40,8 +40,8 @@ python3 -m http.server 5173
 - `src/MockDataGenerator.ts`：可配置权重的 add/cancel/trade 随机流
 - `src/MockMatchingEngine.ts`：模拟后端撮合服务（价格扫到挂单后按队列触发成交）
 - `src/DOMRenderer.ts`：WebGL 绘制 + Canvas 文本层 + 点击/滚轮交互
-- `src/main.ts`：启动、事件桥接、渲染循环（支持 `source=mock|binance`）
-- `src/MarketDataSource.ts`：统一市场数据源接口 + Binance 适配器
+- `src/main.ts`：启动、事件桥接、渲染循环（支持 `source=mock|realtime`，可切换交易所/市场/币种）
+- `src/MarketDataSource.ts`：统一市场数据源接口 + Binance/Bybit 现货与期货适配器
 
 ## 真实交易所接入文档
 

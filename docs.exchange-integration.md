@@ -1,4 +1,4 @@
-# 交易所真实数据接入方案（以 Binance 为例）
+# 交易所真实数据接入方案（Binance + Bybit）
 
 本文档说明如何把当前 DOM 原型从 `MockDataGenerator` 切到真实交易所数据，并给出可扩展到多交易所/后端总线（Kafka）/持久化（TimescaleDB）的架构。
 
@@ -10,7 +10,7 @@
 - `stop()`：停止订阅
 - `getName()`：用于日志和监控
 
-并提供了 `BinanceMarketDataSource`，把 Binance 的深度和逐笔成交流映射为内部统一事件 `BookEvent`（`add/cancel/trade`）。
+并提供了 `BinanceMarketDataSource` 与 `BybitMarketDataSource`，把深度和逐笔成交流映射为内部统一事件 `BookEvent`（`add/cancel/trade`）。
 
 ## 2. 快速试用：直接连接 Binance 公共流
 
@@ -24,11 +24,11 @@ npm run serve
 访问：
 
 - Mock 模式：`http://localhost:5173`
-- Binance 模式：`http://localhost:5173?source=binance`
+- Realtime 模式：`http://localhost:5173?source=realtime&exchange=binance&market=spot&symbol=btcusdt`
 
 ### 2.2 映射逻辑（已实现）
 
-- Binance 模式下订单簿会以“空流动性价格梯”初始化（无随机 seed 挂单），避免 mock seed 残留污染 best bid/ask 与深度上下文。
+- Realtime 模式下订单簿会以“空流动性价格梯”初始化（无随机 seed 挂单），避免 mock seed 残留污染 best bid/ask 与深度上下文。
 - `symbol@depth@100ms`
   - 对同价位维护本地缓存 `depthState`
   - 新值 > 旧值 -> `add`
@@ -118,4 +118,4 @@ class XxxExchangeSource implements MarketDataSource {
 
 ---
 
-如果你告诉我“要接哪个交易所（如 OKX、Bybit、Coinbase）”，我可以直接按它的官方字段把适配器补全，并给出该交易所对应的序列一致性处理细节。
+当前已支持 Binance / Bybit 的 spot + futures 接入；若你要继续接入 OKX、Coinbase，可沿用 `MarketDataSource` 适配器模式。
