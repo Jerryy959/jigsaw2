@@ -289,6 +289,18 @@ function bootstrap(): void {
   });
   renderer.init();
 
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      renderer.recoverAfterTabSwitch();
+      panelDirty = true;
+    }
+  });
+
+  window.addEventListener('pageshow', () => {
+    renderer.recoverAfterTabSwitch();
+    panelDirty = true;
+  });
+
   const marketDataSource =
     sourceMode === 'realtime'
       ? createRealtimeSource(book, onMarketEvent, {

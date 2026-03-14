@@ -15,6 +15,7 @@ export class DOMRenderer {
         this.wheelAccumulator = 0;
         this.hoverRow = -1;
         this.lastCurrentPrice = null;
+        this.isContextLost = false;
         // Column order: bid book | bid footprint | price | ask footprint | ask book
         this.colBidBook = 10;
         this.colBidFoot = 195;
@@ -79,6 +80,15 @@ export class DOMRenderer {
             const hasMine = this.myOrders.getTopOrderAt(price, side);
             this.onClickOrder(price, side, hasMine ? 'cancel' : 'place');
         };
+        this.handleContextLost = (ev) => {
+            ev.preventDefault();
+            this.isContextLost = true;
+        };
+        this.handleContextRestored = () => {
+            this.isContextLost = false;
+            this.initGL();
+            this.render();
+        };
     }
     init() {
         const wrap = document.createElement('div');
@@ -109,6 +119,15 @@ export class DOMRenderer {
         this.uiCanvas.addEventListener('mouseleave', this.handleMouseLeave);
         this.uiCanvas.addEventListener('wheel', this.handleWheel, { passive: false });
         window.addEventListener('keydown', this.handleKeydown);
+        this.glCanvas.addEventListener('webglcontextlost', this.handleContextLost);
+        this.glCanvas.addEventListener('webglcontextrestored', this.handleContextRestored);
+    }
+    recoverAfterTabSwitch() {
+        if (this.isContextLost || this.gl.isContextLost()) {
+            return;
+        }
+        this.gl.viewport(0, 0, this.width, this.height);
+        this.render();
     }
     render() {
         const snap = this.orderBook.getSnapshot();
@@ -236,6 +255,9 @@ export class DOMRenderer {
         ctx.fillText(`current: ${this.orderBook.formatPrice(snap.currentPrice)}  bestBid: ${this.orderBook.formatPrice(snap.bestBid)}  bestAsk: ${this.orderBook.formatPrice(snap.bestAsk)}`, 10, this.height - 12);
     }
     drawRects(rects) {
+        if (this.isContextLost || this.gl.isContextLost()) {
+            return;
+        }
         const data = [];
         const clipX = (x) => (x / this.width) * 2 - 1;
         const clipY = (y) => 1 - (y / this.height) * 2;

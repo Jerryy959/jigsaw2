@@ -32,6 +32,7 @@ export class DOMRenderer {
   private wheelAccumulator = 0;
   private hoverRow = -1;
   private lastCurrentPrice: number | null = null;
+  private isContextLost = false;
 
   // Column order: bid book | bid footprint | price | ask footprint | ask book
   private readonly colBidBook = 10;
@@ -81,6 +82,16 @@ export class DOMRenderer {
     this.uiCanvas.addEventListener('mouseleave', this.handleMouseLeave);
     this.uiCanvas.addEventListener('wheel', this.handleWheel, { passive: false });
     window.addEventListener('keydown', this.handleKeydown);
+    this.glCanvas.addEventListener('webglcontextlost', this.handleContextLost);
+    this.glCanvas.addEventListener('webglcontextrestored', this.handleContextRestored);
+  }
+
+  public recoverAfterTabSwitch(): void {
+    if (this.isContextLost || this.gl.isContextLost()) {
+      return;
+    }
+    this.gl.viewport(0, 0, this.width, this.height);
+    this.render();
   }
 
   public render(): void {
@@ -229,6 +240,10 @@ export class DOMRenderer {
   }
 
   private drawRects(rects: RectDraw[]): void {
+    if (this.isContextLost || this.gl.isContextLost()) {
+      return;
+    }
+
     const data: number[] = [];
     const clipX = (x: number) => (x / this.width) * 2 - 1;
     const clipY = (y: number) => 1 - (y / this.height) * 2;
@@ -382,5 +397,16 @@ export class DOMRenderer {
     const side: Side = x < this.colPrice + 60 ? 'bid' : 'ask';
     const hasMine = this.myOrders.getTopOrderAt(price, side);
     this.onClickOrder(price, side, hasMine ? 'cancel' : 'place');
+  };
+
+  private handleContextLost = (ev: Event): void => {
+    ev.preventDefault();
+    this.isContextLost = true;
+  };
+
+  private handleContextRestored = (): void => {
+    this.isContextLost = false;
+    this.initGL();
+    this.render();
   };
 }
