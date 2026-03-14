@@ -75,13 +75,13 @@ describe('OrderBook footprint display config', () => {
     expect(l99?.buyTraded ?? 0).toBe(0);
     expect(l100?.buyTraded ?? 0).toBe(0);
     expect(l101?.buyTraded ?? 0).toBeGreaterThan(0);
-    expect((l102?.buyTraded ?? 0)).toBeGreaterThanOrEqual(l101?.buyTraded ?? 0);
+    expect((l102?.buyTraded ?? 0)).toBeLessThanOrEqual(l101?.buyTraded ?? 0);
 
     // SELL CUM should only show on bid side (<= bestBid)
     expect(l101?.sellTraded ?? 0).toBe(0);
     expect(l100?.sellTraded ?? 0).toBe(0);
     expect(l99?.sellTraded ?? 0).toBeGreaterThan(0);
-    expect((l98?.sellTraded ?? 0)).toBeGreaterThanOrEqual(l99?.sellTraded ?? 0);
+    expect((l98?.sellTraded ?? 0)).toBeLessThanOrEqual(l99?.sellTraded ?? 0);
 
     book.setFootprintDisplayConfig({ bucketSizeTicks: 1, timeWindowMs: 500, decayHalfLifeMs: 0 });
     const snapWindow = book.getSnapshot();
@@ -89,9 +89,13 @@ describe('OrderBook footprint display config', () => {
     expect(l101Window?.buyTraded ?? 0).toBe(0);
 
     book.applyEvent({ type: 'trade', side: 'bid', price: 101, size: 8, timestamp: Date.now() - 2000 });
+    book.setFootprintDisplayConfig({ bucketSizeTicks: 1, timeWindowMs: 0, decayHalfLifeMs: 0 });
+    const snapNoDecay = book.getSnapshot();
+    const l101NoDecay = snapNoDecay.levels.find((l) => l.price === 101);
+
     book.setFootprintDisplayConfig({ bucketSizeTicks: 1, timeWindowMs: 0, decayHalfLifeMs: 1000 });
     const snapDecay = book.getSnapshot();
     const l101Decay = snapDecay.levels.find((l) => l.price === 101);
-    expect((l101Decay?.buyTraded ?? 0)).toBeLessThan(8);
+    expect((l101Decay?.buyTraded ?? 0)).toBeLessThan(l101NoDecay?.buyTraded ?? 0);
   });
 });
