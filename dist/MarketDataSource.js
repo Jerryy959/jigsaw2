@@ -53,6 +53,15 @@ class BaseRealtimeSource {
         }
         this.applyDepthSide('bid', message.bids);
         this.applyDepthSide('ask', message.asks);
+        this.focusCurrentPriceFromDepth();
+    }
+    focusCurrentPriceFromDepth() {
+        if (!this.depthState.bid.size || !this.depthState.ask.size) {
+            return;
+        }
+        const bestBid = Math.max(...this.depthState.bid.keys());
+        const bestAsk = Math.min(...this.depthState.ask.keys());
+        this.deps.orderBook.setCurrentPrice((bestBid + bestAsk) / 2);
     }
     applyTrade(payload) {
         const rawPrice = Number(payload.price);

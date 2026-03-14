@@ -5,8 +5,20 @@ export class OrderBook {
         this.depth = depth;
         this.randomSeededLiquidity = randomSeededLiquidity;
         this.levels = new Map();
-        this.currentPrice = centerPrice;
+        this.tickDecimals = this.resolveTickDecimals(tickSize);
+        this.currentPrice = this.normalize(centerPrice);
         this.seed();
+    }
+    resolveTickDecimals(tickSize) {
+        const normalizedTick = Number(tickSize.toString());
+        if (!Number.isFinite(normalizedTick) || normalizedTick <= 0) {
+            return 2;
+        }
+        const text = normalizedTick.toString();
+        if (!text.includes('.')) {
+            return 0;
+        }
+        return Math.min(8, text.split('.')[1].length);
     }
     seed() {
         const half = Math.floor(this.depth / 2);
@@ -43,7 +55,17 @@ export class OrderBook {
         return Math.floor(Math.random() * (max - min + 1)) + min;
     }
     normalize(price) {
-        return Number(price.toFixed(2));
+        const rounded = Math.round(price / this.tickSize) * this.tickSize;
+        return Number(rounded.toFixed(this.tickDecimals));
+    }
+    formatPrice(price) {
+        return this.normalize(price).toFixed(this.tickDecimals);
+    }
+    setCurrentPrice(price) {
+        if (!Number.isFinite(price)) {
+            return;
+        }
+        this.currentPrice = this.normalize(price);
     }
     getOrCreate(price) {
         const key = this.normalize(price);

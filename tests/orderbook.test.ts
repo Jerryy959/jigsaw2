@@ -26,3 +26,15 @@ describe('OrderBook trade liquidity impact', () => {
     expect(book.getLiquidity(101, 'ask')).toBe(6);
   });
 });
+
+
+describe('OrderBook price precision', () => {
+  it('keeps small-price symbols at fine precision', () => {
+    const book = new OrderBook(0.065, 0.0001, 20, false);
+    book.applyEvent({ type: 'add', side: 'bid', price: 0.0654, size: 1, timestamp: 1 });
+    const prices = book.getPrices();
+
+    expect(prices).toContain(0.0654);
+    expect(book.formatPrice(0.0654)).toBe('0.0654');
+  });
+});

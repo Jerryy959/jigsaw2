@@ -4,12 +4,14 @@ import { MockDataGenerator } from './MockDataGenerator.js';
 import { MyOrderManager } from './MyOrderManager.js';
 import { MockMatchingEngine } from './MockMatchingEngine.js';
 import { OrderBook } from './OrderBook.js';
-const DEFAULT_TICK_SIZE = 0.0001;
+const DEFAULT_REALTIME_TICK_SIZE = 0.0001;
+const DEFAULT_MOCK_TICK_SIZE = 0.25;
 function bootstrap() {
     const app = document.getElementById('app');
     const ordersPanel = document.getElementById('orders-panel');
     const toastRoot = document.getElementById('toast-root');
-    if (!app || !ordersPanel || !toastRoot) {
+    const latestPriceEl = document.getElementById('latest-price-value');
+    if (!app || !ordersPanel || !toastRoot || !latestPriceEl) {
         throw new Error('Missing root nodes');
     }
     const params = new URLSearchParams(window.location.search);
@@ -18,8 +20,13 @@ function bootstrap() {
     const market = params.get('market') ?? 'spot';
     const symbol = params.get('symbol') ?? resolveDefaultSymbol(exchange === 'bybit' ? 'bybit' : 'binance', market === 'futures' ? 'futures' : 'spot');
     const randomSeededLiquidity = sourceMode === 'mock';
-    const book = new OrderBook(3856, 0.25, 160, randomSeededLiquidity);
+    const tickSize = Number(params.get('tickSize') ?? (sourceMode === 'realtime' ? DEFAULT_REALTIME_TICK_SIZE : DEFAULT_MOCK_TICK_SIZE));
+    const normalizedTick = Number.isFinite(tickSize) && tickSize > 0 ? tickSize : sourceMode === 'realtime' ? DEFAULT_REALTIME_TICK_SIZE : DEFAULT_MOCK_TICK_SIZE;
+    const centerPrice = Number(params.get('centerPrice') ?? (sourceMode === 'realtime' ? 1 : 3856));
+    const normalizedCenter = Number.isFinite(centerPrice) && centerPrice > 0 ? centerPrice : sourceMode === 'realtime' ? 1 : 3856;
+    const book = new OrderBook(normalizedCenter, normalizedTick, 160, randomSeededLiquidity);
     const mine = new MyOrderManager(book);
+    latestPriceEl.textContent = book.formatPrice(normalizedCenter);
     let orderSize = 1;
     let renderIntervalMs = 0; // 0 = realtime
     let panelDirty = true;
@@ -124,6 +131,7 @@ function bootstrap() {
     };
     const applyEvent = (event) => {
         book.applyEvent(event);
+        latestPriceEl.textContent = book.formatPrice(book.getSnapshot().currentPrice);
         const fills = mine.onBookEvent(event);
         fills.forEach(showFillToast);
         if (mine.getVersion() !== lastOrdersVersion) {
@@ -204,7 +212,7 @@ function bootstrap() {
             exchange: exchange === 'bybit' ? 'bybit' : 'binance',
             market: market === 'futures' ? 'futures' : 'spot',
             symbol,
-            tickSize: DEFAULT_TICK_SIZE,
+            tickSize: normalizedTick,
         })
         : new MockDataGenerator(book, 70, onMarketEvent, {
             addWeight: 0.42,

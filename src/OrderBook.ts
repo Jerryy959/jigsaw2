@@ -3,6 +3,7 @@ import type { BookEvent, BookLevel, DOMSnapshot, Side } from './types.js';
 export class OrderBook {
   private readonly levels = new Map<number, BookLevel>();
   private currentPrice: number;
+  private readonly tickDecimals: number;
 
   constructor(
     private readonly centerPrice = 3856,
@@ -10,8 +11,21 @@ export class OrderBook {
     private readonly depth = 140,
     private readonly randomSeededLiquidity = true
   ) {
-    this.currentPrice = centerPrice;
+    this.tickDecimals = this.resolveTickDecimals(tickSize);
+    this.currentPrice = this.normalize(centerPrice);
     this.seed();
+  }
+
+  private resolveTickDecimals(tickSize: number): number {
+    const normalizedTick = Number(tickSize.toString());
+    if (!Number.isFinite(normalizedTick) || normalizedTick <= 0) {
+      return 2;
+    }
+    const text = normalizedTick.toString();
+    if (!text.includes('.')) {
+      return 0;
+    }
+    return Math.min(8, text.split('.')[1].length);
   }
 
   private seed(): void {
@@ -52,7 +66,19 @@ export class OrderBook {
   }
 
   public normalize(price: number): number {
-    return Number(price.toFixed(2));
+    const rounded = Math.round(price / this.tickSize) * this.tickSize;
+    return Number(rounded.toFixed(this.tickDecimals));
+  }
+
+  public formatPrice(price: number): string {
+    return this.normalize(price).toFixed(this.tickDecimals);
+  }
+
+  public setCurrentPrice(price: number): void {
+    if (!Number.isFinite(price)) {
+      return;
+    }
+    this.currentPrice = this.normalize(price);
   }
 
   private getOrCreate(price: number): BookLevel {

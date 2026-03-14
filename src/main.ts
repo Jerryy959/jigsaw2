@@ -6,14 +6,16 @@ import { MockMatchingEngine } from './MockMatchingEngine.js';
 import { OrderBook } from './OrderBook.js';
 import type { BookEvent, FillNotice, MyOrder, Side } from './types.js';
 
-const DEFAULT_TICK_SIZE = 0.0001;
+const DEFAULT_REALTIME_TICK_SIZE = 0.0001;
+const DEFAULT_MOCK_TICK_SIZE = 0.25;
 
 function bootstrap(): void {
   const app = document.getElementById('app');
   const ordersPanel = document.getElementById('orders-panel');
   const toastRoot = document.getElementById('toast-root');
+  const latestPriceEl = document.getElementById('latest-price-value');
 
-  if (!app || !ordersPanel || !toastRoot) {
+  if (!app || !ordersPanel || !toastRoot || !latestPriceEl) {
     throw new Error('Missing root nodes');
   }
 
@@ -24,8 +26,13 @@ function bootstrap(): void {
   const symbol = params.get('symbol') ?? resolveDefaultSymbol(exchange === 'bybit' ? 'bybit' : 'binance', market === 'futures' ? 'futures' : 'spot');
 
   const randomSeededLiquidity = sourceMode === 'mock';
-  const book = new OrderBook(3856, 0.25, 160, randomSeededLiquidity);
+  const tickSize = Number(params.get('tickSize') ?? (sourceMode === 'realtime' ? DEFAULT_REALTIME_TICK_SIZE : DEFAULT_MOCK_TICK_SIZE));
+  const normalizedTick = Number.isFinite(tickSize) && tickSize > 0 ? tickSize : sourceMode === 'realtime' ? DEFAULT_REALTIME_TICK_SIZE : DEFAULT_MOCK_TICK_SIZE;
+  const centerPrice = Number(params.get('centerPrice') ?? (sourceMode === 'realtime' ? 1 : 3856));
+  const normalizedCenter = Number.isFinite(centerPrice) && centerPrice > 0 ? centerPrice : sourceMode === 'realtime' ? 1 : 3856;
+  const book = new OrderBook(normalizedCenter, normalizedTick, 160, randomSeededLiquidity);
   const mine = new MyOrderManager(book);
+  latestPriceEl.textContent = book.formatPrice(normalizedCenter);
 
   let orderSize = 1;
   let renderIntervalMs = 0; // 0 = realtime
@@ -138,6 +145,7 @@ function bootstrap(): void {
 
   const applyEvent = (event: BookEvent): void => {
     book.applyEvent(event);
+    latestPriceEl.textContent = book.formatPrice(book.getSnapshot().currentPrice);
     const fills = mine.onBookEvent(event);
     fills.forEach(showFillToast);
     if (mine.getVersion() !== lastOrdersVersion) {
@@ -230,7 +238,7 @@ function bootstrap(): void {
           exchange: exchange === 'bybit' ? 'bybit' : 'binance',
           market: market === 'futures' ? 'futures' : 'spot',
           symbol,
-          tickSize: DEFAULT_TICK_SIZE,
+          tickSize: normalizedTick,
         })
       : new MockDataGenerator(book, 70, onMarketEvent, {
           addWeight: 0.42,

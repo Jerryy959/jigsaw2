@@ -95,7 +95,7 @@ export class DOMRenderer {
 
       // current and +-2 rows highlighted across all columns (dark, eye-friendly blend)
       if (anchorIndex >= 0 && Math.abs(i - anchorIndex) <= 2) {
-        rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.14, g: 0.2, b: 0.27, a: i === anchorIndex ? 0.32 : 0.18 });
+        rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.14, g: 0.2, b: 0.27, a: i === anchorIndex ? 0.52 : 0.2 });
       }
 
       // bid/ask palette closer to jigsaw
@@ -171,8 +171,9 @@ export class DOMRenderer {
       ctx.fillText(Math.round(l.bidSize).toString(), this.colBidBook + 7, y);
       ctx.fillStyle = '#c5dbf3';
       ctx.fillText(Math.round(l.sellTraded).toString(), this.colBidFoot + 8, y);
-      ctx.fillStyle = i === anchorIndex ? '#dce6ef' : '#e8ecef';
-      ctx.fillText(l.price.toFixed(2), this.colPrice + 10, y);
+      ctx.fillStyle = i === anchorIndex ? '#ffffff' : '#e8ecef';
+      ctx.font = i === anchorIndex ? 'bold 16px monospace' : '15px monospace';
+      ctx.fillText(this.orderBook.formatPrice(l.price), this.colPrice + 10, y);
       ctx.fillStyle = '#f7d4d4';
       ctx.fillText(Math.round(l.buyTraded).toString(), this.colAskFoot + 8, y);
       ctx.fillStyle = '#ffe2e2';
@@ -194,12 +195,18 @@ export class DOMRenderer {
         ctx.lineWidth = 1;
         ctx.strokeRect(1, this.top + i * this.rowH + 1, this.width - 2, this.rowH - 2);
       }
+      if (i === anchorIndex) {
+        ctx.strokeStyle = '#f8fd70';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(this.colPrice - 6, this.top + i * this.rowH + 1, 116, this.rowH - 2);
+      }
+
       ctx.font = '15px monospace';
     });
 
     ctx.fillStyle = '#93a9bb';
     ctx.font = '11px sans-serif';
-    ctx.fillText(`current: ${snap.currentPrice.toFixed(2)}  bestBid: ${snap.bestBid.toFixed(2)}  bestAsk: ${snap.bestAsk.toFixed(2)}`, 10, this.height - 12);
+    ctx.fillText(`current: ${this.orderBook.formatPrice(snap.currentPrice)}  bestBid: ${this.orderBook.formatPrice(snap.bestBid)}  bestAsk: ${this.orderBook.formatPrice(snap.bestAsk)}`, 10, this.height - 12);
   }
 
   private drawRects(rects: RectDraw[]): void {
