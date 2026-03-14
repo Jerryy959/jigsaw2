@@ -28,10 +28,13 @@ export class DOMRenderer {
   private buffer!: WebGLBuffer;
   private posLoc = -1;
   private colorLoc = -1;
-  private scrollOffset = 0;
+  private targetScrollOffset = 0;
+  private displayScrollOffset = 0;
   private wheelAccumulator = 0;
   private hoverRow = -1;
   private lastCurrentPrice: number | null = null;
+  private isContextLost = false;
+  private autoFocusLocked = true;
 
   // Column order: bid book | bid footprint | price | ask footprint | ask book
   private readonly colBidBook = 10;
@@ -81,15 +84,41 @@ export class DOMRenderer {
     this.uiCanvas.addEventListener('mouseleave', this.handleMouseLeave);
     this.uiCanvas.addEventListener('wheel', this.handleWheel, { passive: false });
     window.addEventListener('keydown', this.handleKeydown);
+    this.glCanvas.addEventListener('webglcontextlost', this.handleContextLost);
+    this.glCanvas.addEventListener('webglcontextrestored', this.handleContextRestored);
+  }
+
+
+  public setAutoFocusLocked(locked: boolean): void {
+    this.autoFocusLocked = locked;
+    if (locked) {
+      this.targetScrollOffset = 0;
+      this.wheelAccumulator = 0;
+    }
+  }
+
+  public recoverAfterTabSwitch(): void {
+    if (this.isContextLost || this.gl.isContextLost()) {
+      return;
+    }
+    this.gl.viewport(0, 0, this.width, this.height);
+    this.render();
   }
 
   public render(): void {
     const snap = this.orderBook.getSnapshot();
-    if (this.lastCurrentPrice !== null && snap.currentPrice !== this.lastCurrentPrice) {
-      // Always recenter ladder on latest traded price when market moves.
-      this.scrollOffset = 0;
+    if (this.lastCurrentPrice !== null && snap.currentPrice !== this.lastCurrentPrice && this.autoFocusLocked) {
+      // When focus lock is on, keep ladder centered on latest traded price.
+      this.targetScrollOffset = 0;
     }
     this.lastCurrentPrice = snap.currentPrice;
+
+    const smoothFactor = this.autoFocusLocked ? 0.32 : 0.24;
+    this.displayScrollOffset += (this.targetScrollOffset - this.displayScrollOffset) * smoothFactor;
+    if (Math.abs(this.targetScrollOffset - this.displayScrollOffset) < 0.02) {
+      this.displayScrollOffset = this.targetScrollOffset;
+    }
+
     const { windowLevels, anchorIndex } = this.pickWindow(snap);
     const now = Date.now();
 
@@ -152,7 +181,8 @@ export class DOMRenderer {
     const total = snap.levels.length;
     const currentIdx = snap.levels.findIndex((l) => l.price === snap.currentPrice);
     const baseCenter = currentIdx < 0 ? Math.floor(total / 2) : currentIdx;
-    const center = Math.max(0, Math.min(total - 1, baseCenter + this.scrollOffset));
+    const centerOffset = Math.round(this.displayScrollOffset);
+    const center = Math.max(0, Math.min(total - 1, baseCenter + centerOffset));
     const half = Math.floor(this.visibleRows / 2);
     const start = Math.max(0, Math.min(total - this.visibleRows, center - half));
     const end = Math.min(total, start + this.visibleRows);
@@ -178,7 +208,7 @@ export class DOMRenderer {
     ctx.fillText('ASK BOOK', this.colAskBook + 45, 24);
     ctx.fillStyle = '#89a2b7';
     ctx.font = '11px sans-serif';
-    ctx.fillText(`滚轮滚动 / Shift加速 / Home归中 / 偏移:${this.scrollOffset}`, 370, 40);
+    ctx.fillText(`滚轮滚动 / Shift加速 / Home归中 / 偏移:${Math.round(this.displayScrollOffset)} / ${this.autoFocusLocked ? '锁定跟随' : '解锁滑动'}`, 320, 40);
 
     ctx.font = '15px monospace';
     levels.forEach((l, i) => {
@@ -189,12 +219,12 @@ export class DOMRenderer {
       ctx.fillStyle = '#d8ecfc';
       ctx.fillText(Math.round(l.bidSize).toString(), this.colBidBook + 7, y);
       ctx.fillStyle = '#c5dbf3';
-      ctx.fillText(Math.round(l.sellTraded).toString(), this.colBidFoot + 8, y);
+      ctx.fillText(this.formatCumValue(l.sellTraded), this.colBidFoot + 8, y);
       ctx.fillStyle = i === anchorIndex ? '#ffffff' : '#e8ecef';
       ctx.font = i === anchorIndex ? 'bold 16px monospace' : '15px monospace';
       ctx.fillText(this.orderBook.formatPrice(l.price), this.colPrice + 10, y);
       ctx.fillStyle = '#f7d4d4';
-      ctx.fillText(Math.round(l.buyTraded).toString(), this.colAskFoot + 8, y);
+      ctx.fillText(this.formatCumValue(l.buyTraded), this.colAskFoot + 8, y);
       ctx.fillStyle = '#ffe2e2';
       ctx.fillText(Math.round(l.askSize).toString(), this.colAskBook + 7, y);
 
@@ -228,7 +258,25 @@ export class DOMRenderer {
     ctx.fillText(`current: ${this.orderBook.formatPrice(snap.currentPrice)}  bestBid: ${this.orderBook.formatPrice(snap.bestBid)}  bestAsk: ${this.orderBook.formatPrice(snap.bestAsk)}`, 10, this.height - 12);
   }
 
+
+  private formatCumValue(value: number): string {
+    if (!Number.isFinite(value) || value <= 0) {
+      return '0';
+    }
+    if (value >= 1000) {
+      return Math.round(value).toString();
+    }
+    if (value >= 100) {
+      return value.toFixed(1);
+    }
+    return value.toFixed(2);
+  }
+
   private drawRects(rects: RectDraw[]): void {
+    if (this.isContextLost || this.gl.isContextLost()) {
+      return;
+    }
+
     const data: number[] = [];
     const clipX = (x: number) => (x / this.width) * 2 - 1;
     const clipY = (y: number) => 1 - (y / this.height) * 2;
@@ -306,15 +354,18 @@ export class DOMRenderer {
   }
 
   private adjustScroll(step: number): void {
-    this.scrollOffset = Math.max(-300, Math.min(300, this.scrollOffset + step));
+    this.targetScrollOffset = Math.max(-300, Math.min(300, this.targetScrollOffset + step));
   }
 
   private resetScrollToCurrent(): void {
-    this.scrollOffset = 0;
+    this.targetScrollOffset = 0;
     this.wheelAccumulator = 0;
   }
 
   private handleWheel = (ev: WheelEvent): void => {
+    if (this.autoFocusLocked) {
+      return;
+    }
     ev.preventDefault();
     const scaledDelta = ev.deltaY * (ev.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : ev.deltaMode === WheelEvent.DOM_DELTA_PAGE ? 120 : 1);
     this.wheelAccumulator += scaledDelta;
@@ -354,6 +405,10 @@ export class DOMRenderer {
       return;
     }
 
+    if (this.autoFocusLocked) {
+      return;
+    }
+
     if (ev.key === 'ArrowUp') {
       this.adjustScroll(-1);
       ev.preventDefault();
@@ -382,5 +437,16 @@ export class DOMRenderer {
     const side: Side = x < this.colPrice + 60 ? 'bid' : 'ask';
     const hasMine = this.myOrders.getTopOrderAt(price, side);
     this.onClickOrder(price, side, hasMine ? 'cancel' : 'place');
+  };
+
+  private handleContextLost = (ev: Event): void => {
+    ev.preventDefault();
+    this.isContextLost = true;
+  };
+
+  private handleContextRestored = (): void => {
+    this.isContextLost = false;
+    this.initGL();
+    this.render();
   };
 }

@@ -5,7 +5,7 @@ export class OrderBook {
         this.depth = depth;
         this.randomSeededLiquidity = randomSeededLiquidity;
         this.levels = new Map();
-        this.tradePrints = [];
+        this.sessionTradedByPrice = new Map();
         this.displayConfig = {
             bucketSizeTicks: 1,
             timeWindowMs: 0,
@@ -71,7 +71,39 @@ export class OrderBook {
         if (!Number.isFinite(price)) {
             return;
         }
-        this.currentPrice = this.normalize(price);
+        const normalizedPrice = this.normalize(price);
+        this.currentPrice = normalizedPrice;
+        this.alignLevelsAroundCurrentPrice(normalizedPrice);
+    }
+    alignLevelsAroundCurrentPrice(price) {
+        const now = Date.now();
+        const keepDistance = this.tickSize * this.depth;
+        const nextLevels = new Map();
+        for (const [levelPrice, level] of this.levels.entries()) {
+            const hasActivity = level.bidSize > 0 ||
+                level.askSize > 0 ||
+                level.buyTraded > 0 ||
+                level.sellTraded > 0 ||
+                level.buyFlashUntil > now ||
+                level.sellFlashUntil > now ||
+                level.bidFlashUntil > now ||
+                level.askFlashUntil > now;
+            const closeToCurrent = Math.abs(levelPrice - price) <= keepDistance;
+            if (hasActivity || closeToCurrent) {
+                nextLevels.set(levelPrice, level);
+            }
+        }
+        const half = Math.floor(this.depth / 2);
+        for (let i = -half; i <= half; i += 1) {
+            const levelPrice = this.normalize(price + i * this.tickSize);
+            if (!nextLevels.has(levelPrice)) {
+                nextLevels.set(levelPrice, this.createLevel(levelPrice));
+            }
+        }
+        this.levels.clear();
+        for (const [levelPrice, level] of nextLevels) {
+            this.levels.set(levelPrice, level);
+        }
     }
     setFootprintDisplayConfig(config) {
         this.displayConfig = {
@@ -79,7 +111,6 @@ export class OrderBook {
             timeWindowMs: Math.max(0, Math.floor(config.timeWindowMs ?? this.displayConfig.timeWindowMs)),
             decayHalfLifeMs: Math.max(0, Math.floor(config.decayHalfLifeMs ?? this.displayConfig.decayHalfLifeMs)),
         };
-        this.pruneTrades(Date.now());
     }
     getOrCreate(price) {
         const key = this.normalize(price);
@@ -130,29 +161,21 @@ export class OrderBook {
             level.sellFlashUntil = now + flashMs;
             level.bidFlashUntil = now + flashMs;
         }
-        this.tradePrints.push({
-            price: this.normalize(event.price),
-            side: event.side,
-            size: event.size,
-            timestamp: now,
-        });
-        this.pruneTrades(now);
+        this.recordSessionTrade(event.price, event.side, event.size);
     }
-    pruneTrades(now) {
-        const windowRetain = this.displayConfig.timeWindowMs > 0 ? this.displayConfig.timeWindowMs * 2 : 0;
-        const decayRetain = this.displayConfig.decayHalfLifeMs > 0 ? this.displayConfig.decayHalfLifeMs * 8 : 0;
-        const maxRetainMs = Math.max(windowRetain, decayRetain, 10 * 60000);
-        const threshold = now - maxRetainMs;
-        let deleteCount = 0;
-        while (deleteCount < this.tradePrints.length && this.tradePrints[deleteCount].timestamp < threshold) {
-            deleteCount += 1;
+    recordSessionTrade(price, side, size) {
+        if (!Number.isFinite(size) || size <= 0) {
+            return;
         }
-        if (deleteCount > 0) {
-            this.tradePrints.splice(0, deleteCount);
+        const normalizedPrice = this.normalize(price);
+        const atPrice = this.sessionTradedByPrice.get(normalizedPrice) ?? { buy: 0, sell: 0 };
+        if (side === 'bid') {
+            atPrice.buy += size;
         }
-        if (this.tradePrints.length > 30000) {
-            this.tradePrints.splice(0, this.tradePrints.length - 30000);
+        else {
+            atPrice.sell += size;
         }
+        this.sessionTradedByPrice.set(normalizedPrice, atPrice);
     }
     getLiquidity(price, side) {
         const level = this.levels.get(this.normalize(price));
@@ -169,39 +192,19 @@ export class OrderBook {
         const bucketPrice = Math.round(price / bucketTickSize) * bucketTickSize;
         return Number(bucketPrice.toFixed(this.tickDecimals));
     }
-    getTradeDecayFactor(ageMs) {
-        if (this.displayConfig.decayHalfLifeMs <= 0) {
-            return 1;
-        }
-        return Math.pow(0.5, ageMs / this.displayConfig.decayHalfLifeMs);
-    }
-    projectTradeTotals(now) {
+    projectTradeTotals() {
         const byBucket = new Map();
-        for (const trade of this.tradePrints) {
-            const ageMs = now - trade.timestamp;
-            if (this.displayConfig.timeWindowMs > 0 && ageMs > this.displayConfig.timeWindowMs) {
-                continue;
-            }
-            const weight = this.getTradeDecayFactor(Math.max(0, ageMs));
-            const weightedSize = trade.size * weight;
-            if (weightedSize <= 0) {
-                continue;
-            }
-            const bucketPrice = this.resolveBucketPrice(trade.price);
+        for (const [price, traded] of this.sessionTradedByPrice.entries()) {
+            const bucketPrice = this.resolveBucketPrice(price);
             const bucket = byBucket.get(bucketPrice) ?? { buy: 0, sell: 0 };
-            if (trade.side === 'bid') {
-                bucket.buy += weightedSize;
-            }
-            else {
-                bucket.sell += weightedSize;
-            }
+            bucket.buy += traded.buy;
+            bucket.sell += traded.sell;
             byBucket.set(bucketPrice, bucket);
         }
         return byBucket;
     }
     getSnapshot() {
-        const now = Date.now();
-        const projectedTrades = this.projectTradeTotals(now);
+        const projectedTrades = this.projectTradeTotals();
         const levels = [...this.levels.values()]
             .map((level) => {
             const bucketPrice = this.resolveBucketPrice(level.price);
@@ -217,6 +220,8 @@ export class OrderBook {
         const askCandidates = levels.filter((l) => l.askSize > 0).map((l) => l.price);
         const bestBid = bidCandidates.length ? Math.max(...bidCandidates) : this.currentPrice;
         const bestAsk = askCandidates.length ? Math.min(...askCandidates) : this.currentPrice;
+        // Session CUM is tracked per price level (or per selected price bucket).
+        // Each row shows that row's own running total since page load, not a ladder-wise prefix/suffix sum.
         const maxBookSize = Math.max(1, ...levels.map((l) => Math.max(l.bidSize, l.askSize)));
         const maxTradeSize = Math.max(1, ...levels.map((l) => Math.max(l.buyTraded, l.sellTraded)));
         return { levels, bestBid, bestAsk, currentPrice: this.currentPrice, maxBookSize, maxTradeSize };
