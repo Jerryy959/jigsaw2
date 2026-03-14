@@ -74,13 +74,13 @@ describe('OrderBook session cumulative footprint', () => {
     const l101 = snap1.levels.find((l) => l.price === 101);
     const l102 = snap1.levels.find((l) => l.price === 102);
 
-    // SELL CUM: deeper bid <= bestBid should not be flat and should grow toward best bid.
-    expect((l98?.sellTraded ?? 0)).toBeGreaterThan(0);
-    expect((l99?.sellTraded ?? 0)).toBeGreaterThan(l98?.sellTraded ?? 0);
+    // SELL CUM is per-price session total, not copied from best bid.
+    expect((l98?.sellTraded ?? 0)).toBe(5);
+    expect((l99?.sellTraded ?? 0)).toBe(3);
 
-    // BUY CUM: deeper ask >= bestAsk should not be flat and should grow toward best ask.
-    expect((l102?.buyTraded ?? 0)).toBeGreaterThan(0);
-    expect((l101?.buyTraded ?? 0)).toBeGreaterThan(l102?.buyTraded ?? 0);
+    // BUY CUM is per-price session total, not copied from best ask.
+    expect((l102?.buyTraded ?? 0)).toBe(6);
+    expect((l101?.buyTraded ?? 0)).toBe(4);
 
     // same session keeps accumulating
     book.applyEvent({ type: 'trade', side: 'ask', price: 99, size: 2, timestamp: 6 });

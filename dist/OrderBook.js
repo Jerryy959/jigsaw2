@@ -220,29 +220,8 @@ export class OrderBook {
         const askCandidates = levels.filter((l) => l.askSize > 0).map((l) => l.price);
         const bestBid = bidCandidates.length ? Math.max(...bidCandidates) : this.currentPrice;
         const bestAsk = askCandidates.length ? Math.min(...askCandidates) : this.currentPrice;
-        // Cumulative footprint should be side-aware and accumulate from deeper levels toward the touch:
-        // - SELL CUM only accumulates on bid-side prices (<= bestBid), from deeper bids up to best bid.
-        // - BUY CUM only accumulates on ask-side prices (>= bestAsk), from deeper asks down to best ask.
-        let cumulativeSell = 0;
-        for (let i = levels.length - 1; i >= 0; i -= 1) {
-            if (levels[i].price <= bestBid) {
-                cumulativeSell += levels[i].sellTraded;
-                levels[i].sellTraded = cumulativeSell;
-            }
-            else {
-                levels[i].sellTraded = 0;
-            }
-        }
-        let cumulativeBuy = 0;
-        for (let i = 0; i < levels.length; i += 1) {
-            if (levels[i].price >= bestAsk) {
-                cumulativeBuy += levels[i].buyTraded;
-                levels[i].buyTraded = cumulativeBuy;
-            }
-            else {
-                levels[i].buyTraded = 0;
-            }
-        }
+        // Session CUM is tracked per price level (or per selected price bucket).
+        // Each row shows that row's own running total since page load, not a ladder-wise prefix/suffix sum.
         const maxBookSize = Math.max(1, ...levels.map((l) => Math.max(l.bidSize, l.askSize)));
         const maxTradeSize = Math.max(1, ...levels.map((l) => Math.max(l.buyTraded, l.sellTraded)));
         return { levels, bestBid, bestAsk, currentPrice: this.currentPrice, maxBookSize, maxTradeSize };
