@@ -245,7 +245,17 @@ function bootstrap() {
         recoverRenderer(); });
     window.addEventListener('pageshow', recoverRenderer);
     const marketDataSource = isRealtime
-        ? createRealtimeSource(book, onMarketEvent, { exchange, market, symbol, tickSize, autoDetectTick })
+        ? createRealtimeSource(book, onMarketEvent, {
+            exchange, market, symbol, tickSize, autoDetectTick,
+            onDepthUpdate: (side, price, newSize, prevSize) => {
+                // Write the exact exchange value directly — no accumulation, no drift
+                book.setLevel(price, side, newSize);
+                // Keep MyOrderManager queue position accurate when liquidity shrinks
+                if (prevSize > newSize) {
+                    mine.onBookEvent({ type: 'cancel', side, price, size: prevSize - newSize, timestamp: Date.now() });
+                }
+            },
+        })
         : new MockDataGenerator(book, 70, onMarketEvent, { addWeight: 0.42, cancelWeight: 0.25, tradeWeight: 0.33, burstChance: 0.32 });
     marketDataSource.start();
     console.info(`[MarketData] source started: ${marketDataSource.getName()}`);

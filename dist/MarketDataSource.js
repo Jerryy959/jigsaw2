@@ -157,28 +157,22 @@ class BaseRealtimeSource {
             if (!Number.isFinite(rawPrice) || !Number.isFinite(nextSize))
                 continue;
             const price = this.deps.orderBook.normalize(rawPrice);
-            const previous = state.get(price) ?? 0;
-            if (nextSize === previous)
+            const prevSize = state.get(price) ?? 0;
+            if (nextSize === prevSize)
                 continue;
-            // Store and emit raw base-currency quantities directly (no step-size division).
-            // This avoids all rounding / accumulation errors from imprecise step inference.
-            const delta = nextSize - previous;
-            if (delta > 0) {
-                this.deps.onEvent({ type: 'add', side, price, size: delta, timestamp: Date.now() });
-            }
-            else {
-                this.deps.onEvent({ type: 'cancel', side, price, size: Math.abs(delta), timestamp: Date.now() });
-            }
+            // Update the ground-truth state map
             if (nextSize <= 0)
                 state.delete(price);
             else
                 state.set(price, nextSize);
+            // Notify via absolute-value callback — no delta/accumulation, no drift
+            this.deps.onDepthUpdate(side, price, nextSize, prevSize);
         }
     }
 }
 export class BinanceMarketDataSource extends BaseRealtimeSource {
     constructor(orderBook, onEvent, config) {
-        super({ orderBook, onEvent, symbol: config.symbol.toLowerCase(), tickSize: config.tickSize, autoDetectTick: config.autoDetectTick });
+        super({ orderBook, onEvent, symbol: config.symbol.toLowerCase(), tickSize: config.tickSize, autoDetectTick: config.autoDetectTick, onDepthUpdate: config.onDepthUpdate });
         this.config = config;
         this.lastUpdateId = -1;
         this.buffer = [];
@@ -259,7 +253,7 @@ export class BinanceMarketDataSource extends BaseRealtimeSource {
 }
 export class BybitMarketDataSource extends BaseRealtimeSource {
     constructor(orderBook, onEvent, config) {
-        super({ orderBook, onEvent, symbol: config.symbol.toUpperCase(), tickSize: config.tickSize, autoDetectTick: config.autoDetectTick });
+        super({ orderBook, onEvent, symbol: config.symbol.toUpperCase(), tickSize: config.tickSize, autoDetectTick: config.autoDetectTick, onDepthUpdate: config.onDepthUpdate });
         this.config = config;
         const channel = config.market === 'futures' ? 'linear' : 'spot';
         this.wsBaseUrl = config.wsBaseUrl ?? `wss://stream.bybit.com/v5/public/${channel}`;
@@ -290,7 +284,7 @@ export class BybitMarketDataSource extends BaseRealtimeSource {
 export function createRealtimeSource(orderBook, onEvent, config) {
     const symbol = normalizeSymbol(config.exchange, config.symbol);
     const autoDetectTick = config.autoDetectTick ?? false;
-    const cfg = { symbol, tickSize: config.tickSize, market: config.market, autoDetectTick };
+    const cfg = { symbol, tickSize: config.tickSize, market: config.market, autoDetectTick, onDepthUpdate: config.onDepthUpdate };
     return config.exchange === 'bybit'
         ? new BybitMarketDataSource(orderBook, onEvent, cfg)
         : new BinanceMarketDataSource(orderBook, onEvent, cfg);

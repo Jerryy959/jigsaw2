@@ -177,6 +177,19 @@ export class OrderBook {
     return side === 'bid' ? level.bidSize : level.askSize;
   }
 
+  /**
+   * Directly sets the bid or ask size for a price level from an authoritative source
+   * (e.g. the exchange depth snapshot / stream). This bypasses the add/cancel accumulation
+   * and ensures the book always mirrors the exchange exactly.
+   */
+  public setLevel(price: number, side: Side, rawSize: number): void {
+    const key = this.normalize(price);
+    if (key <= 0) return;
+    const level = this.getOrCreate(key);
+    if (side === 'bid') level.bidSize = Math.max(0, rawSize);
+    else level.askSize = Math.max(0, rawSize);
+  }
+
   public getPrices(): number[] {
     return [...this.levels.keys()].sort((a, b) => a - b);
   }

@@ -17,6 +17,11 @@ export interface RealtimeSourceConfig {
   tickSize: number;
   /** If true, ignore the provided tickSize and infer it from the first snapshot. Default: false */
   autoDetectTick?: boolean;
+  /**
+   * Called for every depth level change with the exact size from the exchange.
+   * Used by main.ts to call book.setLevel() + MyOrderManager queue tracking.
+   */
+  onDepthUpdate: (side: Side, price: number, newSize: number, prevSize: number) => void;
 }
 
 interface DepthState {
@@ -46,6 +51,13 @@ interface BybitTradeMessage {
 interface SourceRuntimeDeps {
   orderBook: OrderBook;
   onEvent: (event: BookEvent) => void;
+  /**
+   * Called for every bid/ask level change from the depth stream.
+   * Receives the ABSOLUTE new size (not a delta) directly from the exchange.
+   * Using an absolute setter instead of add/cancel events eliminates all
+   * accumulation drift between depthState and the OrderBook.
+   */
+  onDepthUpdate: (side: Side, price: number, newSize: number, prevSize: number) => void;
   symbol: string;
   tickSize: number;
   autoDetectTick: boolean;
@@ -245,20 +257,15 @@ abstract class BaseRealtimeSource implements MarketDataSource {
       if (!Number.isFinite(rawPrice) || !Number.isFinite(nextSize)) continue;
 
       const price = this.deps.orderBook.normalize(rawPrice);
-      const previous = state.get(price) ?? 0;
-      if (nextSize === previous) continue;
+      const prevSize = state.get(price) ?? 0;
+      if (nextSize === prevSize) continue;
 
-      // Store and emit raw base-currency quantities directly (no step-size division).
-      // This avoids all rounding / accumulation errors from imprecise step inference.
-      const delta = nextSize - previous;
-      if (delta > 0) {
-        this.deps.onEvent({ type: 'add', side, price, size: delta, timestamp: Date.now() });
-      } else {
-        this.deps.onEvent({ type: 'cancel', side, price, size: Math.abs(delta), timestamp: Date.now() });
-      }
-
+      // Update the ground-truth state map
       if (nextSize <= 0) state.delete(price);
       else state.set(price, nextSize);
+
+      // Notify via absolute-value callback — no delta/accumulation, no drift
+      this.deps.onDepthUpdate(side, price, nextSize, prevSize);
     }
   }
 }
@@ -276,10 +283,11 @@ export class BinanceMarketDataSource extends BaseRealtimeSource {
     private readonly config: {
       symbol: string; tickSize: number;
       market: MarketType; autoDetectTick: boolean;
+      onDepthUpdate: (side: Side, price: number, newSize: number, prevSize: number) => void;
       wsBaseUrl?: string; restBaseUrl?: string;
     }
   ) {
-    super({ orderBook, onEvent, symbol: config.symbol.toLowerCase(), tickSize: config.tickSize, autoDetectTick: config.autoDetectTick });
+    super({ orderBook, onEvent, symbol: config.symbol.toLowerCase(), tickSize: config.tickSize, autoDetectTick: config.autoDetectTick, onDepthUpdate: config.onDepthUpdate });
     this.wsBaseUrl = config.wsBaseUrl ?? (config.market === 'futures' ? 'wss://fstream.binance.com/ws' : 'wss://stream.binance.com:9443/ws');
     this.restBaseUrl = config.restBaseUrl ?? (config.market === 'futures' ? 'https://fapi.binance.com' : 'https://api.binance.com');
   }
@@ -363,10 +371,11 @@ export class BybitMarketDataSource extends BaseRealtimeSource {
     private readonly config: {
       symbol: string; tickSize: number;
       market: MarketType; autoDetectTick: boolean;
+      onDepthUpdate: (side: Side, price: number, newSize: number, prevSize: number) => void;
       wsBaseUrl?: string;
     }
   ) {
-    super({ orderBook, onEvent, symbol: config.symbol.toUpperCase(), tickSize: config.tickSize, autoDetectTick: config.autoDetectTick });
+    super({ orderBook, onEvent, symbol: config.symbol.toUpperCase(), tickSize: config.tickSize, autoDetectTick: config.autoDetectTick, onDepthUpdate: config.onDepthUpdate });
     const channel = config.market === 'futures' ? 'linear' : 'spot';
     this.wsBaseUrl = config.wsBaseUrl ?? `wss://stream.bybit.com/v5/public/${channel}`;
   }
@@ -412,7 +421,7 @@ export function createRealtimeSource(
 ): MarketDataSource {
   const symbol = normalizeSymbol(config.exchange, config.symbol);
   const autoDetectTick = config.autoDetectTick ?? false;
-  const cfg = { symbol, tickSize: config.tickSize, market: config.market, autoDetectTick };
+  const cfg = { symbol, tickSize: config.tickSize, market: config.market, autoDetectTick, onDepthUpdate: config.onDepthUpdate };
 
   return config.exchange === 'bybit'
     ? new BybitMarketDataSource(orderBook, onEvent, cfg)
