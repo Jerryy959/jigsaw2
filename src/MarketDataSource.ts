@@ -16,6 +16,8 @@ export interface RealtimeSourceConfig {
   symbol: string;
   tickSize: number;
   stepSize?: number;
+  /** If true, ignore the provided tickSize and infer it from the first snapshot. Default: false */
+  autoDetectTick?: boolean;
 }
 
 interface DepthState {
@@ -48,6 +50,7 @@ interface SourceRuntimeDeps {
   symbol: string;
   tickSize: number;
   stepSize: number;
+  autoDetectTick: boolean;
 }
 
 interface OrderBookUpdates {
@@ -70,6 +73,47 @@ function normalizeSymbol(exchange: Exchange, symbol: string): string {
   return exchange === 'binance' ? symbol.toLowerCase() : symbol.toUpperCase();
 }
 
+/**
+ * Infers the tick size for an instrument from raw price strings in a depth snapshot.
+ *
+ * Strategy: compute the minimum positive difference between consecutive sorted prices,
+ * then snap it to the nearest "clean" value (1, 2, 2.5, 5, or 10 × 10^n).
+ *
+ * Examples:
+ *   SEIUSDT bids ["0.06350000","0.06340000",...] → min diff ≈ 0.0001 → tick = 0.0001
+ *   BTCUSDT bids ["95000.02","95000.01","95000.00",...] → min diff ≈ 0.01  → tick = 0.01
+ *   BTCUSDT futures ["95100.0","95099.9",...] → min diff ≈ 0.1 → tick = 0.1
+ */
+function inferTickSize(priceStrings: string[]): number {
+  const prices = priceStrings
+    .slice(0, 40)
+    .map(Number)
+    .filter(p => Number.isFinite(p) && p > 0)
+    .sort((a, b) => a - b);
+
+  if (prices.length < 2) return 0.01; // safe fallback
+
+  let minDiff = Infinity;
+  for (let i = 1; i < prices.length; i++) {
+    // toPrecision(10) avoids floating-point noise (e.g. 0.1 - 0.0999... = 0.0000...1)
+    const diff = Number((prices[i] - prices[i - 1]).toPrecision(10));
+    if (diff > 0) minDiff = Math.min(minDiff, diff);
+  }
+
+  if (!Number.isFinite(minDiff) || minDiff <= 0) return 0.01;
+
+  // Snap to the nearest clean tick: 1, 2, 2.5, 5, 10 × 10^n
+  const exp = Math.floor(Math.log10(minDiff));
+  const mantissa = minDiff / Math.pow(10, exp);
+  let snap: number;
+  if (mantissa < 1.5) snap = 1;
+  else if (mantissa < 3.5) snap = 2.5;
+  else if (mantissa < 7.5) snap = 5;
+  else snap = 10;
+
+  return snap * Math.pow(10, exp);
+}
+
 abstract class BaseRealtimeSource implements MarketDataSource {
   protected readonly depthState: DepthState = { bid: new Map(), ask: new Map() };
   private sockets: WebSocket[] = [];
@@ -77,7 +121,7 @@ abstract class BaseRealtimeSource implements MarketDataSource {
   private reconnectTimers: number[] = [];
   private isStopped = false;
 
-  constructor(protected readonly deps: SourceRuntimeDeps) {}
+  constructor(protected readonly deps: SourceRuntimeDeps) { }
 
   public start(): void {
     this.isStopped = false;
@@ -147,10 +191,39 @@ abstract class BaseRealtimeSource implements MarketDataSource {
     if (message.resetState) {
       this.depthState.bid.clear();
       this.depthState.ask.clear();
+
+      // ── Auto-detect tick + center from snapshot, before processing any prices ──
+      // This must run before applyDepthSide so that normalize() uses the correct tick.
+      if (this.deps.autoDetectTick && !this.hasFocusedFromDepth) {
+        this.reinitializeFromSnapshot(message.bids, message.asks);
+      }
     }
+
     this.applyDepthSide('bid', message.bids);
     this.applyDepthSide('ask', message.asks);
     this.focusCurrentPriceOnce();
+  }
+
+  /**
+   * Detects the correct tick size and mid price from raw snapshot price strings,
+   * then reinitializes the OrderBook so all levels align to real market increments.
+   */
+  private reinitializeFromSnapshot(
+    bids: Array<[string, string]>,
+    asks: Array<[string, string]>
+  ): void {
+    const allPrices = [...bids.map(b => b[0]), ...asks.map(a => a[0])];
+    const tick = inferTickSize(allPrices);
+
+    // Binance REST snapshot: bids are sorted descending, asks ascending
+    const topBid = bids.length ? Number(bids[0][0]) : 0;
+    const topAsk = asks.length ? Number(asks[0][0]) : 0;
+    const mid = topBid > 0 && topAsk > 0 ? (topBid + topAsk) / 2 : topBid || topAsk;
+
+    if (mid > 0 && tick > 0) {
+      console.info(`[${this.getName()}] auto-detected tick=${tick}, mid=${mid}`);
+      this.deps.orderBook.reinitialize(mid, tick);
+    }
   }
 
   private focusCurrentPriceOnce(): void {
@@ -163,7 +236,7 @@ abstract class BaseRealtimeSource implements MarketDataSource {
 
   protected applyTrade(payload: TradePayload): void {
     const price = Number(payload.price);
-    const size  = Number(payload.size);
+    const size = Number(payload.size);
     if (!Number.isFinite(price) || !Number.isFinite(size)) return;
     this.deps.onEvent({
       type: 'trade',
@@ -182,19 +255,19 @@ abstract class BaseRealtimeSource implements MarketDataSource {
       const nextSize = Number(sizeStr);
       if (!Number.isFinite(rawPrice) || !Number.isFinite(nextSize)) continue;
 
-      const price    = this.deps.orderBook.normalize(rawPrice);
+      const price = this.deps.orderBook.normalize(rawPrice);
       const previous = state.get(price) ?? 0;
       if (nextSize === previous) continue;
 
       const delta = this.normalizeToStep(nextSize) - this.normalizeToStep(previous);
       if (delta > 0) {
-        this.deps.onEvent({ type: 'add',    side, price, size: delta,        timestamp: Date.now() });
+        this.deps.onEvent({ type: 'add', side, price, size: delta, timestamp: Date.now() });
       } else if (delta < 0) {
         this.deps.onEvent({ type: 'cancel', side, price, size: Math.abs(delta), timestamp: Date.now() });
       }
 
       if (nextSize <= 0) state.delete(price);
-      else               state.set(price, nextSize);
+      else state.set(price, nextSize);
     }
   }
 
@@ -213,11 +286,21 @@ export class BinanceMarketDataSource extends BaseRealtimeSource {
   constructor(
     orderBook: OrderBook,
     onEvent: (event: BookEvent) => void,
-    private readonly config: { symbol: string; tickSize: number; stepSize: number; market: MarketType; wsBaseUrl?: string; restBaseUrl?: string }
+    private readonly config: {
+      symbol: string; tickSize: number; stepSize: number;
+      market: MarketType; autoDetectTick: boolean;
+      wsBaseUrl?: string; restBaseUrl?: string;
+    }
   ) {
-    super({ orderBook, onEvent, symbol: config.symbol.toLowerCase(), tickSize: config.tickSize, stepSize: config.stepSize });
-    this.wsBaseUrl   = config.wsBaseUrl   ?? (config.market === 'futures' ? 'wss://fstream.binance.com/ws'        : 'wss://stream.binance.com:9443/ws');
-    this.restBaseUrl = config.restBaseUrl ?? (config.market === 'futures' ? 'https://fapi.binance.com'           : 'https://api.binance.com');
+    super({
+      orderBook, onEvent,
+      symbol: config.symbol.toLowerCase(),
+      tickSize: config.tickSize,
+      stepSize: config.stepSize,
+      autoDetectTick: config.autoDetectTick,
+    });
+    this.wsBaseUrl = config.wsBaseUrl ?? (config.market === 'futures' ? 'wss://fstream.binance.com/ws' : 'wss://stream.binance.com:9443/ws');
+    this.restBaseUrl = config.restBaseUrl ?? (config.market === 'futures' ? 'https://fapi.binance.com' : 'https://api.binance.com');
   }
 
   public getName(): string {
@@ -253,7 +336,7 @@ export class BinanceMarketDataSource extends BaseRealtimeSource {
   private async fetchSnapshot(): Promise<void> {
     try {
       const path = this.config.market === 'futures' ? '/fapi/v1/depth' : '/api/v3/depth';
-      const url  = `${this.restBaseUrl}${path}?symbol=${this.deps.symbol.toUpperCase()}&limit=1000`;
+      const url = `${this.restBaseUrl}${path}?symbol=${this.deps.symbol.toUpperCase()}&limit=1000`;
       const data = await (await fetch(url)).json();
 
       this.lastUpdateId = data.lastUpdateId ?? data.u;
@@ -270,10 +353,8 @@ export class BinanceMarketDataSource extends BaseRealtimeSource {
   private processBuffer(): void {
     if (this.lastUpdateId === -1) return;
     for (const msg of this.buffer) {
-      // Spot: first valid event has U <= lastUpdateId+1 AND u >= lastUpdateId+1
-      // Futures: first valid event has U <= lastUpdateId AND u >= lastUpdateId
       const syncStart = this.config.market === 'futures'
-        ? msg.U <= this.lastUpdateId     && msg.u >= this.lastUpdateId
+        ? msg.U <= this.lastUpdateId && msg.u >= this.lastUpdateId
         : msg.U <= this.lastUpdateId + 1 && msg.u >= this.lastUpdateId + 1;
 
       if (this.isSyncing) {
@@ -298,9 +379,19 @@ export class BybitMarketDataSource extends BaseRealtimeSource {
   constructor(
     orderBook: OrderBook,
     onEvent: (event: BookEvent) => void,
-    private readonly config: { symbol: string; tickSize: number; stepSize: number; market: MarketType; wsBaseUrl?: string }
+    private readonly config: {
+      symbol: string; tickSize: number; stepSize: number;
+      market: MarketType; autoDetectTick: boolean;
+      wsBaseUrl?: string;
+    }
   ) {
-    super({ orderBook, onEvent, symbol: config.symbol.toUpperCase(), tickSize: config.tickSize, stepSize: config.stepSize });
+    super({
+      orderBook, onEvent,
+      symbol: config.symbol.toUpperCase(),
+      tickSize: config.tickSize,
+      stepSize: config.stepSize,
+      autoDetectTick: config.autoDetectTick,
+    });
     const channel = config.market === 'futures' ? 'linear' : 'spot';
     this.wsBaseUrl = config.wsBaseUrl ?? `wss://stream.bybit.com/v5/public/${channel}`;
   }
@@ -344,9 +435,10 @@ export function createRealtimeSource(
   onEvent: (event: BookEvent) => void,
   config: RealtimeSourceConfig
 ): MarketDataSource {
-  const symbol   = normalizeSymbol(config.exchange, config.symbol);
+  const symbol = normalizeSymbol(config.exchange, config.symbol);
   const stepSize = config.stepSize ?? (config.market === 'futures' ? 0.001 : 0.00001);
-  const cfg      = { symbol, tickSize: config.tickSize, stepSize, market: config.market };
+  const autoDetectTick = config.autoDetectTick ?? false;
+  const cfg = { symbol, tickSize: config.tickSize, stepSize, market: config.market, autoDetectTick };
 
   return config.exchange === 'bybit'
     ? new BybitMarketDataSource(orderBook, onEvent, cfg)

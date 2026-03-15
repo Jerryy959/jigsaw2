@@ -41,13 +41,17 @@ function bootstrap(): void {
   const realtimeTick = isBtcSpot ? 0.01 : DEFAULT_TICK;
   const realtimeStep = isBtcSpot ? 0.00001 : DEFAULT_STEP;
 
-  const tickSize    = getNumParam(params, 'tickSize',    isRealtime ? realtimeTick : MOCK_TICK);
-  const stepSize    = getNumParam(params, 'stepSize',    isRealtime ? realtimeStep : 1);
+  // autoDetectTick: enabled for realtime when user has not explicitly set tickSize in the URL.
+  // The first snapshot from the exchange is used to infer the real tick for any instrument.
+  const autoDetectTick = isRealtime && !params.has('tickSize');
+
+  const tickSize = getNumParam(params, 'tickSize', isRealtime ? realtimeTick : MOCK_TICK);
+  const stepSize = getNumParam(params, 'stepSize', isRealtime ? realtimeStep : 1);
   const centerPrice = getNumParam(params, 'centerPrice', isRealtime ? 1 : 3856);
 
   let footprintBucketTicks = Math.max(1, intParam(params, 'fpBucketTicks', 1));
-  let footprintWindowMs    = 0;
-  let footprintDecayMs     = 0;
+  let footprintWindowMs = 0;
+  let footprintDecayMs = 0;
 
   const book = new OrderBook(centerPrice, tickSize, 160, !isRealtime);
   const mine = new MyOrderManager(book);
@@ -175,10 +179,10 @@ function bootstrap(): void {
     const next = new URLSearchParams(window.location.search);
     const sel = (id: string) => (document.getElementById(id) as HTMLSelectElement | null)?.value;
     const inp = (id: string) => (document.getElementById(id) as HTMLInputElement | null)?.value?.trim();
-    if (sel('source-mode'))   next.set('source',   sel('source-mode')!);
-    if (sel('exchange-mode')) next.set('exchange',  sel('exchange-mode')!);
-    if (sel('market-mode'))   next.set('market',    sel('market-mode')!);
-    if (inp('symbol-input'))  next.set('symbol',    inp('symbol-input')!);
+    if (sel('source-mode')) next.set('source', sel('source-mode')!);
+    if (sel('exchange-mode')) next.set('exchange', sel('exchange-mode')!);
+    if (sel('market-mode')) next.set('market', sel('market-mode')!);
+    if (inp('symbol-input')) next.set('symbol', inp('symbol-input')!);
     window.location.search = next.toString();
   };
 
@@ -246,7 +250,7 @@ function bootstrap(): void {
   window.addEventListener('pageshow', recoverRenderer);
 
   const marketDataSource = isRealtime
-    ? createRealtimeSource(book, onMarketEvent, { exchange, market, symbol, tickSize, stepSize })
+    ? createRealtimeSource(book, onMarketEvent, { exchange, market, symbol, tickSize, stepSize, autoDetectTick })
     : new MockDataGenerator(book, 70, onMarketEvent, { addWeight: 0.42, cancelWeight: 0.25, tradeWeight: 0.33, burstChance: 0.32 });
 
   marketDataSource.start();

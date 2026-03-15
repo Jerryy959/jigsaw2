@@ -4,17 +4,40 @@ export class OrderBook {
   private readonly levels = new Map<number, BookLevel>();
   private readonly sessionTradedByPrice = new Map<number, { buy: number; sell: number }>();
   private currentPrice: number;
-  private readonly tickDecimals: number;
+  // Not readonly: reinitialize() may update these when auto-detecting tick from live data
+  private tickSize: number;
+  private tickDecimals: number;
+  private centerPrice: number;
   private displayConfig: FootprintDisplayConfig = { bucketSizeTicks: 1, timeWindowMs: 0, decayHalfLifeMs: 0 };
 
   constructor(
-    private readonly centerPrice = 3856,
-    private readonly tickSize = 0.25,
+    centerPrice = 3856,
+    tickSize = 0.25,
     private readonly depth = 140,
     private readonly randomSeededLiquidity = true
   ) {
+    this.centerPrice = centerPrice;
+    this.tickSize = tickSize;
     this.tickDecimals = this.resolveTickDecimals(tickSize);
     this.currentPrice = this.normalize(centerPrice);
+    this.seed();
+  }
+
+  /**
+   * Reinitializes the book with a new center price and tick size.
+   * Called automatically by MarketDataSource once the first real snapshot arrives,
+   * so the book adapts to any instrument (SEIUSDT, BTCUSDT, etc.) without manual config.
+   */
+  public reinitialize(newCenter: number, newTickSize: number): void {
+    if (!Number.isFinite(newCenter) || newCenter <= 0) return;
+    if (!Number.isFinite(newTickSize) || newTickSize <= 0) return;
+
+    this.tickSize = newTickSize;
+    this.tickDecimals = this.resolveTickDecimals(newTickSize);
+    this.centerPrice = newCenter;
+    this.levels.clear();
+    this.sessionTradedByPrice.clear();
+    this.currentPrice = this.normalize(newCenter);
     this.seed();
   }
 
@@ -29,6 +52,7 @@ export class OrderBook {
     const half = Math.floor(this.depth / 2);
     for (let i = -half; i <= half; i++) {
       const price = this.normalize(this.centerPrice + i * this.tickSize);
+      if (price <= 0) continue; // never seed negative or zero price levels
       const dist = Math.max(1, Math.abs(i));
       const bidSize = this.randomSeededLiquidity ? (i <= 0 ? this.rand(80, 5000) / Math.sqrt(dist) : this.rand(5, 500)) : 0;
       const askSize = this.randomSeededLiquidity ? (i >= 0 ? this.rand(80, 5000) / Math.sqrt(dist) : this.rand(5, 500)) : 0;
@@ -52,6 +76,10 @@ export class OrderBook {
     return this.normalize(price).toFixed(this.tickDecimals);
   }
 
+  public getTickSize(): number {
+    return this.tickSize;
+  }
+
   public setCurrentPrice(price: number): void {
     if (!Number.isFinite(price)) return;
     const p = this.normalize(price);
@@ -64,7 +92,6 @@ export class OrderBook {
     const keepDistance = this.tickSize * this.depth;
     const half = Math.floor(this.depth / 2);
 
-    // Prune levels that are too far away and have no activity
     for (const [levelPrice, level] of this.levels.entries()) {
       const tooFar = Math.abs(levelPrice - price) > keepDistance;
       if (!tooFar) continue;
@@ -76,9 +103,9 @@ export class OrderBook {
       if (!hasActivity) this.levels.delete(levelPrice);
     }
 
-    // Ensure the visible window around the new price has entries
     for (let i = -half; i <= half; i++) {
       const levelPrice = this.normalize(price + i * this.tickSize);
+      if (levelPrice <= 0) continue; // guard: never create negative price levels
       if (!this.levels.has(levelPrice)) {
         this.levels.set(levelPrice, this.createLevel(levelPrice));
       }
@@ -88,7 +115,7 @@ export class OrderBook {
   public setFootprintDisplayConfig(config: Partial<FootprintDisplayConfig>): void {
     this.displayConfig = {
       bucketSizeTicks: Math.max(1, Math.floor(config.bucketSizeTicks ?? this.displayConfig.bucketSizeTicks)),
-      timeWindowMs:    Math.max(0, Math.floor(config.timeWindowMs    ?? this.displayConfig.timeWindowMs)),
+      timeWindowMs: Math.max(0, Math.floor(config.timeWindowMs ?? this.displayConfig.timeWindowMs)),
       decayHalfLifeMs: Math.max(0, Math.floor(config.decayHalfLifeMs ?? this.displayConfig.decayHalfLifeMs)),
     };
   }
@@ -107,13 +134,13 @@ export class OrderBook {
 
     if (event.type === 'add') {
       if (event.side === 'bid') level.bidSize += event.size;
-      else                      level.askSize += event.size;
+      else level.askSize += event.size;
       return;
     }
 
     if (event.type === 'cancel') {
       if (event.side === 'bid') level.bidSize = Math.max(0, level.bidSize - event.size);
-      else                      level.askSize = Math.max(0, level.askSize - event.size);
+      else level.askSize = Math.max(0, level.askSize - event.size);
       return;
     }
 
@@ -129,7 +156,7 @@ export class OrderBook {
     } else {
       if (impacts) level.bidSize = Math.max(0, level.bidSize - event.size);
       level.sellFlashUntil = event.timestamp + flashMs;
-      level.bidFlashUntil  = event.timestamp + flashMs;
+      level.bidFlashUntil = event.timestamp + flashMs;
     }
 
     this.recordSessionTrade(event.price, event.side, event.size);
@@ -140,7 +167,7 @@ export class OrderBook {
     const key = this.normalize(price);
     const entry = this.sessionTradedByPrice.get(key) ?? { buy: 0, sell: 0 };
     if (side === 'bid') entry.buy += size;
-    else                entry.sell += size;
+    else entry.sell += size;
     this.sessionTradedByPrice.set(key, entry);
   }
 
@@ -181,15 +208,14 @@ export class OrderBook {
       })
       .sort((a, b) => b.price - a.price);
 
-    // levels is sorted descending: first bidSize>0 is bestBid, last askSize>0 is bestAsk
     const bestBid = levels.find(l => l.bidSize > 0)?.price ?? this.currentPrice;
     let bestAsk = this.currentPrice;
     for (let i = levels.length - 1; i >= 0; i--) {
       if (levels[i].askSize > 0) { bestAsk = levels[i].price; break; }
     }
 
-    const maxBookSize  = Math.max(1, ...levels.map(l => Math.max(l.bidSize,    l.askSize)));
-    const maxTradeSize = Math.max(1, ...levels.map(l => Math.max(l.buyTraded,  l.sellTraded)));
+    const maxBookSize = Math.max(1, ...levels.map(l => Math.max(l.bidSize, l.askSize)));
+    const maxTradeSize = Math.max(1, ...levels.map(l => Math.max(l.buyTraded, l.sellTraded)));
 
     return { levels, bestBid, bestAsk, currentPrice: this.currentPrice, maxBookSize, maxTradeSize };
   }

@@ -32,6 +32,9 @@ function bootstrap() {
     const isBtcSpot = symbol.toLowerCase() === 'btcusdt' && market === 'spot';
     const realtimeTick = isBtcSpot ? 0.01 : DEFAULT_TICK;
     const realtimeStep = isBtcSpot ? 0.00001 : DEFAULT_STEP;
+    // autoDetectTick: enabled for realtime when user has not explicitly set tickSize in the URL.
+    // The first snapshot from the exchange is used to infer the real tick for any instrument.
+    const autoDetectTick = isRealtime && !params.has('tickSize');
     const tickSize = getNumParam(params, 'tickSize', isRealtime ? realtimeTick : MOCK_TICK);
     const stepSize = getNumParam(params, 'stepSize', isRealtime ? realtimeStep : 1);
     const centerPrice = getNumParam(params, 'centerPrice', isRealtime ? 1 : 3856);
@@ -227,7 +230,7 @@ function bootstrap() {
         recoverRenderer(); });
     window.addEventListener('pageshow', recoverRenderer);
     const marketDataSource = isRealtime
-        ? createRealtimeSource(book, onMarketEvent, { exchange, market, symbol, tickSize, stepSize })
+        ? createRealtimeSource(book, onMarketEvent, { exchange, market, symbol, tickSize, stepSize, autoDetectTick })
         : new MockDataGenerator(book, 70, onMarketEvent, { addWeight: 0.42, cancelWeight: 0.25, tradeWeight: 0.33, burstChance: 0.32 });
     marketDataSource.start();
     console.info(`[MarketData] source started: ${marketDataSource.getName()}`);

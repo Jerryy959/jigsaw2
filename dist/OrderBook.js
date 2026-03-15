@@ -1,14 +1,32 @@
 export class OrderBook {
     constructor(centerPrice = 3856, tickSize = 0.25, depth = 140, randomSeededLiquidity = true) {
-        this.centerPrice = centerPrice;
-        this.tickSize = tickSize;
         this.depth = depth;
         this.randomSeededLiquidity = randomSeededLiquidity;
         this.levels = new Map();
         this.sessionTradedByPrice = new Map();
         this.displayConfig = { bucketSizeTicks: 1, timeWindowMs: 0, decayHalfLifeMs: 0 };
+        this.centerPrice = centerPrice;
+        this.tickSize = tickSize;
         this.tickDecimals = this.resolveTickDecimals(tickSize);
         this.currentPrice = this.normalize(centerPrice);
+        this.seed();
+    }
+    /**
+     * Reinitializes the book with a new center price and tick size.
+     * Called automatically by MarketDataSource once the first real snapshot arrives,
+     * so the book adapts to any instrument (SEIUSDT, BTCUSDT, etc.) without manual config.
+     */
+    reinitialize(newCenter, newTickSize) {
+        if (!Number.isFinite(newCenter) || newCenter <= 0)
+            return;
+        if (!Number.isFinite(newTickSize) || newTickSize <= 0)
+            return;
+        this.tickSize = newTickSize;
+        this.tickDecimals = this.resolveTickDecimals(newTickSize);
+        this.centerPrice = newCenter;
+        this.levels.clear();
+        this.sessionTradedByPrice.clear();
+        this.currentPrice = this.normalize(newCenter);
         this.seed();
     }
     resolveTickDecimals(tickSize) {
@@ -22,6 +40,8 @@ export class OrderBook {
         const half = Math.floor(this.depth / 2);
         for (let i = -half; i <= half; i++) {
             const price = this.normalize(this.centerPrice + i * this.tickSize);
+            if (price <= 0)
+                continue; // never seed negative or zero price levels
             const dist = Math.max(1, Math.abs(i));
             const bidSize = this.randomSeededLiquidity ? (i <= 0 ? this.rand(80, 5000) / Math.sqrt(dist) : this.rand(5, 500)) : 0;
             const askSize = this.randomSeededLiquidity ? (i >= 0 ? this.rand(80, 5000) / Math.sqrt(dist) : this.rand(5, 500)) : 0;
@@ -40,6 +60,9 @@ export class OrderBook {
     formatPrice(price) {
         return this.normalize(price).toFixed(this.tickDecimals);
     }
+    getTickSize() {
+        return this.tickSize;
+    }
     setCurrentPrice(price) {
         if (!Number.isFinite(price))
             return;
@@ -51,7 +74,6 @@ export class OrderBook {
         const now = Date.now();
         const keepDistance = this.tickSize * this.depth;
         const half = Math.floor(this.depth / 2);
-        // Prune levels that are too far away and have no activity
         for (const [levelPrice, level] of this.levels.entries()) {
             const tooFar = Math.abs(levelPrice - price) > keepDistance;
             if (!tooFar)
@@ -63,9 +85,10 @@ export class OrderBook {
             if (!hasActivity)
                 this.levels.delete(levelPrice);
         }
-        // Ensure the visible window around the new price has entries
         for (let i = -half; i <= half; i++) {
             const levelPrice = this.normalize(price + i * this.tickSize);
+            if (levelPrice <= 0)
+                continue; // guard: never create negative price levels
             if (!this.levels.has(levelPrice)) {
                 this.levels.set(levelPrice, this.createLevel(levelPrice));
             }
@@ -164,7 +187,6 @@ export class OrderBook {
             return { ...level, buyTraded: bucket?.buy ?? 0, sellTraded: bucket?.sell ?? 0 };
         })
             .sort((a, b) => b.price - a.price);
-        // levels is sorted descending: first bidSize>0 is bestBid, last askSize>0 is bestAsk
         const bestBid = levels.find(l => l.bidSize > 0)?.price ?? this.currentPrice;
         let bestAsk = this.currentPrice;
         for (let i = levels.length - 1; i >= 0; i--) {
