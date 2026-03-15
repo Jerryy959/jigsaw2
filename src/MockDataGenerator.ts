@@ -18,21 +18,14 @@ export class MockDataGenerator implements MarketDataSource {
   ) {}
 
   public start(): void {
-    if (this.timer) {
-      return;
-    }
+    if (this.timer !== null) return;
     this.timer = window.setInterval(() => {
-      const events = this.nextBatch();
-      for (const event of events) {
-        this.onEvent(event);
-      }
+      for (const event of this.nextBatch()) this.onEvent(event);
     }, this.intervalMs);
   }
 
   public stop(): void {
-    if (!this.timer) {
-      return;
-    }
+    if (this.timer === null) return;
     window.clearInterval(this.timer);
     this.timer = null;
   }
@@ -42,34 +35,25 @@ export class MockDataGenerator implements MarketDataSource {
   }
 
   private pickType(): BookEvent['type'] {
-    const total = this.config.addWeight + this.config.cancelWeight + this.config.tradeWeight;
-    const r = Math.random() * total;
-    if (r < this.config.addWeight) {
-      return 'add';
-    }
-    if (r < this.config.addWeight + this.config.cancelWeight) {
-      return 'cancel';
-    }
+    const { addWeight, cancelWeight, tradeWeight } = this.config;
+    const r = Math.random() * (addWeight + cancelWeight + tradeWeight);
+    if (r < addWeight)                   return 'add';
+    if (r < addWeight + cancelWeight)    return 'cancel';
     return 'trade';
   }
 
   private nextBatch(): BookEvent[] {
     const prices = this.orderBook.getPrices();
     const center = Math.floor(prices.length / 2);
-    const count = Math.random() < this.config.burstChance ? 2 + Math.floor(Math.random() * 3) : 1;
-    const out: BookEvent[] = [];
+    const count  = Math.random() < this.config.burstChance ? 2 + Math.floor(Math.random() * 3) : 1;
 
-    for (let i = 0; i < count; i++) {
+    return Array.from({ length: count }, () => {
       const distance = Math.floor((Math.random() - 0.5) * 16);
-      const idx = Math.max(0, Math.min(prices.length - 1, center + distance));
-      const price = prices[idx];
+      const idx   = Math.max(0, Math.min(prices.length - 1, center + distance));
+      const type  = this.pickType();
       const side: Side = Math.random() > 0.5 ? 'bid' : 'ask';
-      const type = this.pickType();
-      const base = type === 'trade' ? 200 : 140;
-      const size = 1 + Math.floor(Math.random() * base);
-      out.push({ type, side, price, size, timestamp: Date.now() });
-    }
-
-    return out;
+      const size  = 1 + Math.floor(Math.random() * (type === 'trade' ? 200 : 140));
+      return { type, side, price: prices[idx], size, timestamp: Date.now() };
+    });
   }
 }

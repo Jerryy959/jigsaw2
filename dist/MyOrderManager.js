@@ -5,14 +5,13 @@ export class MyOrderManager {
         this.version = 0;
     }
     placeOrder(side, price, size) {
-        const aheadVolume = this.orderBook.getLiquidity(price, side);
         const order = {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             side,
             price,
             size,
             remaining: size,
-            aheadVolume,
+            aheadVolume: this.orderBook.getLiquidity(price, side),
             createdAt: Date.now(),
         };
         this.orders.set(order.id, order);
@@ -21,18 +20,16 @@ export class MyOrderManager {
     }
     cancelTopOrderAt(price, side) {
         const top = this.getTopOrderAt(price, side);
-        if (!top) {
+        if (!top)
             return undefined;
-        }
         this.orders.delete(top.id);
         this.version += 1;
         return top;
     }
     cancelById(orderId) {
         const order = this.orders.get(orderId);
-        if (!order) {
+        if (!order)
             return undefined;
-        }
         this.orders.delete(orderId);
         this.version += 1;
         return order;
@@ -41,54 +38,49 @@ export class MyOrderManager {
         const fills = [];
         let changed = false;
         for (const order of this.orders.values()) {
-            if (order.price !== event.price || order.remaining <= 0) {
+            if (order.price !== event.price || order.remaining <= 0)
                 continue;
-            }
             const queueChange = event.type === 'cancel' && event.side === order.side;
-            const matchHappened = event.type === 'trade' &&
-                ((order.side === 'bid' && event.side === 'ask') ||
-                    (order.side === 'ask' && event.side === 'bid'));
-            if (!queueChange && !matchHappened) {
+            const matchHappened = event.type === 'trade' && event.side !== order.side;
+            if (!queueChange && !matchHappened)
                 continue;
-            }
             const consumedAhead = Math.min(order.aheadVolume, event.size);
             if (consumedAhead > 0) {
+                order.aheadVolume -= consumedAhead;
                 changed = true;
             }
-            order.aheadVolume -= consumedAhead;
             const impactOnMe = event.size - consumedAhead;
             if (impactOnMe > 0) {
                 const filled = Math.min(order.remaining, impactOnMe);
-                const prevRemaining = order.remaining;
                 order.remaining = Math.max(0, order.remaining - impactOnMe);
-                if (order.remaining !== prevRemaining) {
-                    changed = true;
-                }
-                fills.push({
-                    orderId: order.id,
-                    side: order.side,
-                    price: order.price,
-                    fillSize: filled,
-                    remaining: order.remaining,
-                });
+                fills.push({ orderId: order.id, side: order.side, price: order.price, fillSize: filled, remaining: order.remaining });
+                changed = true;
             }
         }
+        // Remove fully-filled orders
         for (const [id, order] of this.orders.entries()) {
             if (order.remaining <= 0) {
                 this.orders.delete(id);
                 changed = true;
             }
         }
-        if (changed) {
+        if (changed)
             this.version += 1;
-        }
         return fills;
     }
     getOrders() {
         return [...this.orders.values()].sort((a, b) => a.createdAt - b.createdAt);
     }
+    // Iterate directly instead of creating a full sorted array
     getTopOrderAt(price, side) {
-        return this.getOrders().find((o) => o.price === price && o.side === side);
+        let earliest;
+        for (const order of this.orders.values()) {
+            if (order.price === price && order.side === side) {
+                if (!earliest || order.createdAt < earliest.createdAt)
+                    earliest = order;
+            }
+        }
+        return earliest;
     }
     getVersion() {
         return this.version;

@@ -3,23 +3,24 @@ import { MyOrderManager } from './MyOrderManager.js';
 import type { DOMSnapshot, Side } from './types.js';
 
 interface RectDraw {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  r: number;
-  g: number;
-  b: number;
-  a: number;
+  x: number; y: number; w: number; h: number;
+  r: number; g: number; b: number; a: number;
 }
 
-export class DOMRenderer {
-  private readonly width = 900;
-  private readonly height = 1080;
-  private readonly rowH = 20;
-  private readonly top = 44;
-  private readonly visibleRows = 48;
+// Column layout: bid book | bid footprint | price | ask footprint | ask book
+const COL_BID_BOOK = 10;
+const COL_BID_FOOT = 195;
+const COL_PRICE    = 305;
+const COL_ASK_FOOT = 415;
+const COL_ASK_BOOK = 525;
 
+const WIDTH        = 900;
+const HEIGHT       = 1080;
+const ROW_H        = 20;
+const HEADER_H     = 44;
+const VISIBLE_ROWS = 48;
+
+export class DOMRenderer {
   private glCanvas!: HTMLCanvasElement;
   private uiCanvas!: HTMLCanvasElement;
   private gl!: WebGLRenderingContext;
@@ -28,6 +29,7 @@ export class DOMRenderer {
   private buffer!: WebGLBuffer;
   private posLoc = -1;
   private colorLoc = -1;
+
   private targetScrollOffset = 0;
   private displayScrollOffset = 0;
   private wheelAccumulator = 0;
@@ -35,13 +37,6 @@ export class DOMRenderer {
   private lastCurrentPrice: number | null = null;
   private isContextLost = false;
   private autoFocusLocked = true;
-
-  // Column order: bid book | bid footprint | price | ask footprint | ask book
-  private readonly colBidBook = 10;
-  private readonly colBidFoot = 195;
-  private readonly colPrice = 305;
-  private readonly colAskFoot = 415;
-  private readonly colAskBook = 525;
 
   constructor(
     private readonly orderBook: OrderBook,
@@ -52,42 +47,37 @@ export class DOMRenderer {
 
   public init(): void {
     const wrap = document.createElement('div');
-    wrap.style.position = 'relative';
-    wrap.style.width = `${this.width}px`;
-    wrap.style.height = `${this.height}px`;
+    wrap.style.cssText = `position:relative;width:${WIDTH}px;height:${HEIGHT}px`;
 
-    this.glCanvas = document.createElement('canvas');
-    this.glCanvas.width = this.width;
-    this.glCanvas.height = this.height;
-    this.glCanvas.style.position = 'absolute';
-
-    this.uiCanvas = document.createElement('canvas');
-    this.uiCanvas.width = this.width;
-    this.uiCanvas.height = this.height;
-    this.uiCanvas.style.position = 'absolute';
-
+    this.glCanvas = this.makeCanvas();
+    this.uiCanvas = this.makeCanvas();
     wrap.append(this.glCanvas, this.uiCanvas);
     this.mountEl.appendChild(wrap);
 
-    const gl = this.glCanvas.getContext('webgl');
+    const gl  = this.glCanvas.getContext('webgl');
     const ctx = this.uiCanvas.getContext('2d');
-    if (!gl || !ctx) {
-      throw new Error('missing canvas context');
-    }
-    this.gl = gl;
+    if (!gl || !ctx) throw new Error('missing canvas context');
+    this.gl  = gl;
     this.ctx = ctx;
     this.initGL();
 
-    this.uiCanvas.addEventListener('click', this.handleClick);
-    this.uiCanvas.addEventListener('dblclick', this.handleDoubleClick);
-    this.uiCanvas.addEventListener('mousemove', this.handleMouseMove);
+    this.uiCanvas.addEventListener('click',      this.handleClick);
+    this.uiCanvas.addEventListener('dblclick',   this.handleDoubleClick);
+    this.uiCanvas.addEventListener('mousemove',  this.handleMouseMove);
     this.uiCanvas.addEventListener('mouseleave', this.handleMouseLeave);
-    this.uiCanvas.addEventListener('wheel', this.handleWheel, { passive: false });
+    this.uiCanvas.addEventListener('wheel',      this.handleWheel, { passive: false });
     window.addEventListener('keydown', this.handleKeydown);
-    this.glCanvas.addEventListener('webglcontextlost', this.handleContextLost);
+    this.glCanvas.addEventListener('webglcontextlost',     this.handleContextLost);
     this.glCanvas.addEventListener('webglcontextrestored', this.handleContextRestored);
   }
 
+  private makeCanvas(): HTMLCanvasElement {
+    const c = document.createElement('canvas');
+    c.width  = WIDTH;
+    c.height = HEIGHT;
+    c.style.position = 'absolute';
+    return c;
+  }
 
   public setAutoFocusLocked(locked: boolean): void {
     this.autoFocusLocked = locked;
@@ -98,17 +88,15 @@ export class DOMRenderer {
   }
 
   public recoverAfterTabSwitch(): void {
-    if (this.isContextLost || this.gl.isContextLost()) {
-      return;
-    }
-    this.gl.viewport(0, 0, this.width, this.height);
+    if (this.isContextLost || this.gl.isContextLost()) return;
+    this.gl.viewport(0, 0, WIDTH, HEIGHT);
     this.render();
   }
 
   public render(): void {
     const snap = this.orderBook.getSnapshot();
+
     if (this.lastCurrentPrice !== null && snap.currentPrice !== this.lastCurrentPrice && this.autoFocusLocked) {
-      // When focus lock is on, keep ladder centered on latest traded price.
       this.targetScrollOffset = 0;
     }
     this.lastCurrentPrice = snap.currentPrice;
@@ -121,56 +109,45 @@ export class DOMRenderer {
 
     const { windowLevels, anchorIndex } = this.pickWindow(snap);
     const now = Date.now();
-
     const rects: RectDraw[] = [];
+
     windowLevels.forEach((l, i) => {
-      const y = this.top + i * this.rowH;
+      const y = HEADER_H + i * ROW_H;
+
+      // Alternating row stripe
+      if (i % 2 === 0) {
+        rects.push({ x: 0, y, w: WIDTH, h: ROW_H - 1, r: 0.03, g: 0.15, b: 0.2, a: 0.16 });
+      }
+      // Hover highlight
+      if (this.hoverRow === i) {
+        rects.push({ x: 0, y, w: WIDTH, h: ROW_H - 1, r: 0.18, g: 0.3, b: 0.41, a: 0.2 });
+      }
+      // Current price band (±2 rows)
+      if (anchorIndex >= 0 && Math.abs(i - anchorIndex) <= 2) {
+        rects.push({ x: 0, y, w: WIDTH, h: ROW_H - 1, r: 0.14, g: 0.2, b: 0.27, a: i === anchorIndex ? 0.52 : 0.2 });
+      }
+
+      // Bid / ask book bars
       const bidRatio = l.bidSize / snap.maxBookSize;
       const askRatio = l.askSize / snap.maxBookSize;
-      const buyTradeRatio = l.buyTraded / snap.maxTradeSize;
-      const sellTradeRatio = l.sellTraded / snap.maxTradeSize;
+      rects.push({ x: COL_BID_BOOK + 170 * (1 - bidRatio), y: y + 1, w: 170 * bidRatio, h: ROW_H - 2, r: 0.24, g: 0.55, b: 0.78, a: 0.86 });
+      rects.push({ x: COL_ASK_BOOK, y: y + 1, w: 170 * askRatio, h: ROW_H - 2, r: 0.78, g: 0.36, b: 0.33, a: 0.86 });
 
-      if (i % 2 === 0) {
-        rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.03, g: 0.15, b: 0.2, a: 0.16 });
-      }
+      // Footprint cumulative bars
+      const sellRatio = l.sellTraded / snap.maxTradeSize;
+      const buyRatio  = l.buyTraded  / snap.maxTradeSize;
+      rects.push({ x: COL_BID_FOOT + 100 * (1 - sellRatio), y: y + 1, w: 100 * sellRatio, h: ROW_H - 2, r: 0.2,  g: 0.43, b: 0.68, a: 0.78 });
+      rects.push({ x: COL_ASK_FOOT, y: y + 1, w: 100 * buyRatio, h: ROW_H - 2, r: 0.69, g: 0.3,  b: 0.31, a: 0.78 });
 
-      if (this.hoverRow === i) {
-        rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.18, g: 0.3, b: 0.41, a: 0.2 });
-      }
+      // Taker flash animations
+      if (l.bidFlashUntil  > now) rects.push({ x: COL_BID_BOOK, y: y + 1, w: 170, h: ROW_H - 2, r: 0.42, g: 0.82, b: 1,    a: 0.28 });
+      if (l.askFlashUntil  > now) rects.push({ x: COL_ASK_BOOK, y: y + 1, w: 170, h: ROW_H - 2, r: 1,    g: 0.46, b: 0.46, a: 0.28 });
+      if (l.sellFlashUntil > now) rects.push({ x: COL_BID_FOOT, y: y + 1, w: 100, h: ROW_H - 2, r: 0.4,  g: 0.72, b: 1,    a: 0.22 });
+      if (l.buyFlashUntil  > now) rects.push({ x: COL_ASK_FOOT, y: y + 1, w: 100, h: ROW_H - 2, r: 1,    g: 0.56, b: 0.56, a: 0.22 });
 
-      // current and +-2 rows highlighted across all columns (dark, eye-friendly blend)
-      if (anchorIndex >= 0 && Math.abs(i - anchorIndex) <= 2) {
-        rects.push({ x: 0, y, w: this.width, h: this.rowH - 1, r: 0.14, g: 0.2, b: 0.27, a: i === anchorIndex ? 0.52 : 0.2 });
-      }
-
-      // bid/ask palette closer to jigsaw
-      rects.push({ x: this.colBidBook + 170 * (1 - bidRatio), y: y + 1, w: 170 * bidRatio, h: this.rowH - 2, r: 0.24, g: 0.55, b: 0.78, a: 0.86 });
-      rects.push({ x: this.colAskBook, y: y + 1, w: 170 * askRatio, h: this.rowH - 2, r: 0.78, g: 0.36, b: 0.33, a: 0.86 });
-
-      // footprint cumulative columns
-      rects.push({ x: this.colBidFoot + 100 * (1 - sellTradeRatio), y: y + 1, w: 100 * sellTradeRatio, h: this.rowH - 2, r: 0.2, g: 0.43, b: 0.68, a: 0.78 });
-      rects.push({ x: this.colAskFoot, y: y + 1, w: 100 * buyTradeRatio, h: this.rowH - 2, r: 0.69, g: 0.3, b: 0.31, a: 0.78 });
-
-      // taker flashes animation
-      if (l.bidFlashUntil > now) {
-        rects.push({ x: this.colBidBook, y: y + 1, w: 170, h: this.rowH - 2, r: 0.42, g: 0.82, b: 1, a: 0.28 });
-      }
-      if (l.askFlashUntil > now) {
-        rects.push({ x: this.colAskBook, y: y + 1, w: 170, h: this.rowH - 2, r: 1, g: 0.46, b: 0.46, a: 0.28 });
-      }
-      if (l.sellFlashUntil > now) {
-        rects.push({ x: this.colBidFoot, y: y + 1, w: 100, h: this.rowH - 2, r: 0.4, g: 0.72, b: 1, a: 0.22 });
-      }
-      if (l.buyFlashUntil > now) {
-        rects.push({ x: this.colAskFoot, y: y + 1, w: 100, h: this.rowH - 2, r: 1, g: 0.56, b: 0.56, a: 0.22 });
-      }
-
-      if (this.myOrders.getTopOrderAt(l.price, 'bid')) {
-        rects.push({ x: this.colBidBook - 5, y: y + 1, w: 5, h: this.rowH - 2, r: 1, g: 0.92, b: 0.3, a: 1 });
-      }
-      if (this.myOrders.getTopOrderAt(l.price, 'ask')) {
-        rects.push({ x: this.colAskBook + 172, y: y + 1, w: 5, h: this.rowH - 2, r: 1, g: 0.92, b: 0.3, a: 1 });
-      }
+      // My order indicators
+      if (this.myOrders.getTopOrderAt(l.price, 'bid')) rects.push({ x: COL_BID_BOOK - 5, y: y + 1, w: 5, h: ROW_H - 2, r: 1, g: 0.92, b: 0.3, a: 1 });
+      if (this.myOrders.getTopOrderAt(l.price, 'ask')) rects.push({ x: COL_ASK_BOOK + 172, y: y + 1, w: 5, h: ROW_H - 2, r: 1, g: 0.92, b: 0.3, a: 1 });
     });
 
     this.drawRects(rects);
@@ -178,76 +155,76 @@ export class DOMRenderer {
   }
 
   private pickWindow(snap: DOMSnapshot): { windowLevels: DOMSnapshot['levels']; anchorIndex: number } {
-    const total = snap.levels.length;
-    const currentIdx = snap.levels.findIndex((l) => l.price === snap.currentPrice);
+    const total      = snap.levels.length;
+    const currentIdx = snap.levels.findIndex(l => l.price === snap.currentPrice);
     const baseCenter = currentIdx < 0 ? Math.floor(total / 2) : currentIdx;
-    const centerOffset = Math.round(this.displayScrollOffset);
-    const center = Math.max(0, Math.min(total - 1, baseCenter + centerOffset));
-    const half = Math.floor(this.visibleRows / 2);
-    const start = Math.max(0, Math.min(total - this.visibleRows, center - half));
-    const end = Math.min(total, start + this.visibleRows);
-    const windowLevels = snap.levels.slice(start, end);
-    // anchor current price to true market row; do not move current highlight with manual wheel scroll.
+    const center     = Math.max(0, Math.min(total - 1, baseCenter + Math.round(this.displayScrollOffset)));
+    const half       = Math.floor(VISIBLE_ROWS / 2);
+    const start      = Math.max(0, Math.min(total - VISIBLE_ROWS, center - half));
+    const end        = Math.min(total, start + VISIBLE_ROWS);
     const anchorIndex = currentIdx < start || currentIdx >= end ? -1 : currentIdx - start;
-    return { windowLevels, anchorIndex };
+    return { windowLevels: snap.levels.slice(start, end), anchorIndex };
   }
 
   private drawTexts(snap: DOMSnapshot, levels: DOMSnapshot['levels'], anchorIndex: number): void {
-    const ctx = this.ctx;
-    ctx.clearRect(0, 0, this.width, this.height);
+    const { ctx } = this;
+    ctx.clearRect(0, 0, WIDTH, HEIGHT);
 
+    // Header background
     ctx.fillStyle = '#202a34';
-    ctx.fillRect(0, 0, this.width, this.top - 2);
+    ctx.fillRect(0, 0, WIDTH, HEADER_H - 2);
 
     ctx.fillStyle = '#d5e3ee';
     ctx.font = 'bold 12px sans-serif';
-    ctx.fillText('BID BOOK', this.colBidBook + 45, 24);
-    ctx.fillText('SELL CUM', this.colBidFoot + 20, 24);
-    ctx.fillText('PRICE', this.colPrice + 33, 24);
-    ctx.fillText('BUY CUM', this.colAskFoot + 22, 24);
-    ctx.fillText('ASK BOOK', this.colAskBook + 45, 24);
+    ctx.fillText('BID BOOK',  COL_BID_BOOK + 45, 24);
+    ctx.fillText('SELL CUM',  COL_BID_FOOT + 20, 24);
+    ctx.fillText('PRICE',     COL_PRICE    + 33, 24);
+    ctx.fillText('BUY CUM',   COL_ASK_FOOT + 22, 24);
+    ctx.fillText('ASK BOOK',  COL_ASK_BOOK + 45, 24);
+
     ctx.fillStyle = '#89a2b7';
     ctx.font = '11px sans-serif';
-    ctx.fillText(`滚轮滚动 / Shift加速 / Home归中 / 偏移:${Math.round(this.displayScrollOffset)} / ${this.autoFocusLocked ? '锁定跟随' : '解锁滑动'}`, 320, 40);
+    ctx.fillText(
+      `滚轮滚动 / Shift加速 / Home归中 / 偏移:${Math.round(this.displayScrollOffset)} / ${this.autoFocusLocked ? '锁定跟随' : '解锁滑动'}`,
+      320, 40
+    );
 
     ctx.font = '15px monospace';
     levels.forEach((l, i) => {
-      const y = this.top + i * this.rowH + 15;
+      const y     = HEADER_H + i * ROW_H + 15;
       const myBid = this.myOrders.getTopOrderAt(l.price, 'bid');
       const myAsk = this.myOrders.getTopOrderAt(l.price, 'ask');
+      const isAnchor = i === anchorIndex;
 
       ctx.fillStyle = '#d8ecfc';
-      ctx.fillText(Math.round(l.bidSize).toString(), this.colBidBook + 7, y);
+      ctx.fillText(Math.round(l.bidSize).toString(), COL_BID_BOOK + 7, y);
+
       ctx.fillStyle = '#c5dbf3';
-      ctx.fillText(this.formatCumValue(l.sellTraded), this.colBidFoot + 8, y);
-      ctx.fillStyle = i === anchorIndex ? '#ffffff' : '#e8ecef';
-      ctx.font = i === anchorIndex ? 'bold 16px monospace' : '15px monospace';
-      ctx.fillText(this.orderBook.formatPrice(l.price), this.colPrice + 10, y);
+      ctx.fillText(this.formatCumValue(l.sellTraded), COL_BID_FOOT + 8, y);
+
+      ctx.fillStyle = isAnchor ? '#ffffff' : '#e8ecef';
+      ctx.font = isAnchor ? 'bold 16px monospace' : '15px monospace';
+      ctx.fillText(this.orderBook.formatPrice(l.price), COL_PRICE + 10, y);
+
       ctx.fillStyle = '#f7d4d4';
-      ctx.fillText(this.formatCumValue(l.buyTraded), this.colAskFoot + 8, y);
+      ctx.fillText(this.formatCumValue(l.buyTraded), COL_ASK_FOOT + 8, y);
+
       ctx.fillStyle = '#ffe2e2';
-      ctx.fillText(Math.round(l.askSize).toString(), this.colAskBook + 7, y);
+      ctx.fillText(Math.round(l.askSize).toString(), COL_ASK_BOOK + 7, y);
 
       ctx.font = '11px sans-serif';
-      if (myBid) {
-        ctx.fillStyle = '#ffeb7a';
-        ctx.fillText(`#${Math.floor(myBid.aheadVolume) + 1}`, this.colBidBook + 120, y - 2);
-      }
-      if (myAsk) {
-        ctx.fillStyle = '#ffeb7a';
-        ctx.fillText(`#${Math.floor(myAsk.aheadVolume) + 1}`, this.colAskBook + 120, y - 2);
-      }
+      if (myBid) { ctx.fillStyle = '#ffeb7a'; ctx.fillText(`#${Math.floor(myBid.aheadVolume) + 1}`, COL_BID_BOOK + 120, y - 2); }
+      if (myAsk) { ctx.fillStyle = '#ffeb7a'; ctx.fillText(`#${Math.floor(myAsk.aheadVolume) + 1}`, COL_ASK_BOOK + 120, y - 2); }
 
       if (myBid || myAsk) {
-        // highlight row border once my order is resting on this price
         ctx.strokeStyle = '#83fff2';
         ctx.lineWidth = 1;
-        ctx.strokeRect(1, this.top + i * this.rowH + 1, this.width - 2, this.rowH - 2);
+        ctx.strokeRect(1, HEADER_H + i * ROW_H + 1, WIDTH - 2, ROW_H - 2);
       }
-      if (i === anchorIndex) {
+      if (isAnchor) {
         ctx.strokeStyle = '#f8fd70';
         ctx.lineWidth = 2;
-        ctx.strokeRect(this.colPrice - 6, this.top + i * this.rowH + 1, 116, this.rowH - 2);
+        ctx.strokeRect(COL_PRICE - 6, HEADER_H + i * ROW_H + 1, 116, ROW_H - 2);
       }
 
       ctx.font = '15px monospace';
@@ -255,61 +232,49 @@ export class DOMRenderer {
 
     ctx.fillStyle = '#93a9bb';
     ctx.font = '11px sans-serif';
-    ctx.fillText(`current: ${this.orderBook.formatPrice(snap.currentPrice)}  bestBid: ${this.orderBook.formatPrice(snap.bestBid)}  bestAsk: ${this.orderBook.formatPrice(snap.bestAsk)}`, 10, this.height - 12);
+    ctx.fillText(
+      `current: ${this.orderBook.formatPrice(snap.currentPrice)}  bestBid: ${this.orderBook.formatPrice(snap.bestBid)}  bestAsk: ${this.orderBook.formatPrice(snap.bestAsk)}`,
+      10, HEIGHT - 12
+    );
   }
 
-
   private formatCumValue(value: number): string {
-    if (!Number.isFinite(value) || value <= 0) {
-      return '0';
-    }
-    if (value >= 1000) {
-      return Math.round(value).toString();
-    }
-    if (value >= 100) {
-      return value.toFixed(1);
-    }
+    if (!Number.isFinite(value) || value <= 0) return '0';
+    if (value >= 1000) return Math.round(value).toString();
+    if (value >= 100)  return value.toFixed(1);
     return value.toFixed(2);
   }
 
   private drawRects(rects: RectDraw[]): void {
-    if (this.isContextLost || this.gl.isContextLost()) {
-      return;
-    }
+    if (this.isContextLost || this.gl.isContextLost()) return;
 
     const data: number[] = [];
-    const clipX = (x: number) => (x / this.width) * 2 - 1;
-    const clipY = (y: number) => 1 - (y / this.height) * 2;
+    const cx = (x: number) => (x / WIDTH)  * 2 - 1;
+    const cy = (y: number) => 1 - (y / HEIGHT) * 2;
 
-    for (const r of rects) {
-      const x1 = clipX(r.x);
-      const y1 = clipY(r.y);
-      const x2 = clipX(r.x + r.w);
-      const y2 = clipY(r.y + r.h);
+    for (const { x, y, w, h, r, g, b, a } of rects) {
+      const x1 = cx(x), y1 = cy(y), x2 = cx(x + w), y2 = cy(y + h);
+      // Two triangles per rect (6 vertices × 6 floats)
       data.push(
-        x1, y1, r.r, r.g, r.b, r.a,
-        x2, y1, r.r, r.g, r.b, r.a,
-        x1, y2, r.r, r.g, r.b, r.a,
-        x1, y2, r.r, r.g, r.b, r.a,
-        x2, y1, r.r, r.g, r.b, r.a,
-        x2, y2, r.r, r.g, r.b, r.a
+        x1, y1, r, g, b, a,  x2, y1, r, g, b, a,  x1, y2, r, g, b, a,
+        x1, y2, r, g, b, a,  x2, y1, r, g, b, a,  x2, y2, r, g, b, a
       );
     }
 
-    this.gl.viewport(0, 0, this.width, this.height);
-    this.gl.clearColor(0.02, 0.11, 0.16, 1);
-    this.gl.clear(this.gl.COLOR_BUFFER_BIT);
-
-    this.gl.useProgram(this.program);
-    this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.buffer);
-    this.gl.bufferData(this.gl.ARRAY_BUFFER, new Float32Array(data), this.gl.DYNAMIC_DRAW);
+    const gl = this.gl;
+    gl.viewport(0, 0, WIDTH, HEIGHT);
+    gl.clearColor(0.02, 0.11, 0.16, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(this.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.DYNAMIC_DRAW);
 
     const stride = 6 * Float32Array.BYTES_PER_ELEMENT;
-    this.gl.enableVertexAttribArray(this.posLoc);
-    this.gl.vertexAttribPointer(this.posLoc, 2, this.gl.FLOAT, false, stride, 0);
-    this.gl.enableVertexAttribArray(this.colorLoc);
-    this.gl.vertexAttribPointer(this.colorLoc, 4, this.gl.FLOAT, false, stride, 2 * Float32Array.BYTES_PER_ELEMENT);
-    this.gl.drawArrays(this.gl.TRIANGLES, 0, data.length / 6);
+    gl.enableVertexAttribArray(this.posLoc);
+    gl.vertexAttribPointer(this.posLoc,   2, gl.FLOAT, false, stride, 0);
+    gl.enableVertexAttribArray(this.colorLoc);
+    gl.vertexAttribPointer(this.colorLoc, 4, gl.FLOAT, false, stride, 2 * Float32Array.BYTES_PER_ELEMENT);
+    gl.drawArrays(gl.TRIANGLES, 0, data.length / 6);
   }
 
   private initGL(): void {
@@ -317,35 +282,29 @@ export class DOMRenderer {
       attribute vec2 a_pos;
       attribute vec4 a_col;
       varying vec4 v_col;
-      void main() {
-        gl_Position = vec4(a_pos, 0.0, 1.0);
-        v_col = a_col;
-      }
+      void main() { gl_Position = vec4(a_pos, 0.0, 1.0); v_col = a_col; }
     `;
     const frag = `
       precision mediump float;
       varying vec4 v_col;
-      void main() {
-        gl_FragColor = v_col;
-      }
+      void main() { gl_FragColor = v_col; }
     `;
-
-    const vs = this.compile(this.gl.VERTEX_SHADER, vert);
-    const fs = this.compile(this.gl.FRAGMENT_SHADER, frag);
-    this.program = this.link(vs, fs);
-    this.posLoc = this.gl.getAttribLocation(this.program, 'a_pos');
+    const vs = this.compileShader(this.gl.VERTEX_SHADER, vert);
+    const fs = this.compileShader(this.gl.FRAGMENT_SHADER, frag);
+    this.program  = this.linkProgram(vs, fs);
+    this.posLoc   = this.gl.getAttribLocation(this.program, 'a_pos');
     this.colorLoc = this.gl.getAttribLocation(this.program, 'a_col');
-    this.buffer = this.gl.createBuffer() as WebGLBuffer;
+    this.buffer   = this.gl.createBuffer() as WebGLBuffer;
   }
 
-  private compile(type: number, source: string): WebGLShader {
+  private compileShader(type: number, src: string): WebGLShader {
     const s = this.gl.createShader(type) as WebGLShader;
-    this.gl.shaderSource(s, source);
+    this.gl.shaderSource(s, src);
     this.gl.compileShader(s);
     return s;
   }
 
-  private link(vs: WebGLShader, fs: WebGLShader): WebGLProgram {
+  private linkProgram(vs: WebGLShader, fs: WebGLShader): WebGLProgram {
     const p = this.gl.createProgram() as WebGLProgram;
     this.gl.attachShader(p, vs);
     this.gl.attachShader(p, fs);
@@ -357,19 +316,18 @@ export class DOMRenderer {
     this.targetScrollOffset = Math.max(-300, Math.min(300, this.targetScrollOffset + step));
   }
 
-  private resetScrollToCurrent(): void {
-    this.targetScrollOffset = 0;
+  private resetScroll(): void {
+    this.targetScrollOffset  = 0;
     this.wheelAccumulator = 0;
   }
 
-  private handleWheel = (ev: WheelEvent): void => {
-    if (this.autoFocusLocked) {
-      return;
-    }
-    ev.preventDefault();
-    const scaledDelta = ev.deltaY * (ev.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : ev.deltaMode === WheelEvent.DOM_DELTA_PAGE ? 120 : 1);
-    this.wheelAccumulator += scaledDelta;
+  // ── Event handlers ────────────────────────────────────────────────────────
 
+  private handleWheel = (ev: WheelEvent): void => {
+    if (this.autoFocusLocked) return;
+    ev.preventDefault();
+    const scale = ev.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : ev.deltaMode === WheelEvent.DOM_DELTA_PAGE ? 120 : 1;
+    this.wheelAccumulator += ev.deltaY * scale;
     const threshold = ev.shiftKey ? 18 : 36;
     const steps = Math.trunc(this.wheelAccumulator / threshold);
     if (steps !== 0) {
@@ -379,74 +337,37 @@ export class DOMRenderer {
   };
 
   private handleMouseMove = (ev: MouseEvent): void => {
-    const rect = this.uiCanvas.getBoundingClientRect();
-    const y = ev.clientY - rect.top;
-    const row = Math.floor((y - this.top) / this.rowH);
-    this.hoverRow = row >= 0 && row < this.visibleRows ? row : -1;
+    const y   = ev.clientY - this.uiCanvas.getBoundingClientRect().top;
+    const row = Math.floor((y - HEADER_H) / ROW_H);
+    this.hoverRow = row >= 0 && row < VISIBLE_ROWS ? row : -1;
   };
 
-  private handleMouseLeave = (): void => {
-    this.hoverRow = -1;
-  };
-
-  private handleDoubleClick = (): void => {
-    this.resetScrollToCurrent();
-  };
+  private handleMouseLeave  = (): void => { this.hoverRow = -1; };
+  private handleDoubleClick = (): void  => { this.resetScroll(); };
 
   private handleKeydown = (ev: KeyboardEvent): void => {
-    const target = ev.target as HTMLElement | null;
-    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) {
-      return;
-    }
+    const tag = (ev.target as HTMLElement | null)?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
-    if (ev.key === 'Home') {
-      this.resetScrollToCurrent();
-      ev.preventDefault();
-      return;
-    }
-
-    if (this.autoFocusLocked) {
-      return;
-    }
-
-    if (ev.key === 'ArrowUp') {
-      this.adjustScroll(-1);
-      ev.preventDefault();
-      return;
-    }
-
-    if (ev.key === 'ArrowDown') {
-      this.adjustScroll(1);
-      ev.preventDefault();
-    }
+    if (ev.key === 'Home') { this.resetScroll(); ev.preventDefault(); return; }
+    if (this.autoFocusLocked) return;
+    if (ev.key === 'ArrowUp')   { this.adjustScroll(-1); ev.preventDefault(); }
+    if (ev.key === 'ArrowDown') { this.adjustScroll(1);  ev.preventDefault(); }
   };
 
   private handleClick = (ev: MouseEvent): void => {
     const rect = this.uiCanvas.getBoundingClientRect();
-    const x = ev.clientX - rect.left;
-    const y = ev.clientY - rect.top;
-    const row = Math.floor((y - this.top) / this.rowH);
-    const snap = this.orderBook.getSnapshot();
-    const { windowLevels } = this.pickWindow(snap);
-
-    if (row < 0 || row >= windowLevels.length) {
-      return;
-    }
+    const x    = ev.clientX - rect.left;
+    const y    = ev.clientY - rect.top;
+    const row  = Math.floor((y - HEADER_H) / ROW_H);
+    const { windowLevels } = this.pickWindow(this.orderBook.getSnapshot());
+    if (row < 0 || row >= windowLevels.length) return;
 
     const price = windowLevels[row].price;
-    const side: Side = x < this.colPrice + 60 ? 'bid' : 'ask';
-    const hasMine = this.myOrders.getTopOrderAt(price, side);
-    this.onClickOrder(price, side, hasMine ? 'cancel' : 'place');
+    const side: Side = x < COL_PRICE + 60 ? 'bid' : 'ask';
+    this.onClickOrder(price, side, this.myOrders.getTopOrderAt(price, side) ? 'cancel' : 'place');
   };
 
-  private handleContextLost = (ev: Event): void => {
-    ev.preventDefault();
-    this.isContextLost = true;
-  };
-
-  private handleContextRestored = (): void => {
-    this.isContextLost = false;
-    this.initGL();
-    this.render();
-  };
+  private handleContextLost = (ev: Event): void => { ev.preventDefault(); this.isContextLost = true; };
+  private handleContextRestored = (): void => { this.isContextLost = false; this.initGL(); this.render(); };
 }

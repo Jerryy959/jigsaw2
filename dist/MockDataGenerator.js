@@ -12,20 +12,16 @@ export class MockDataGenerator {
         this.timer = null;
     }
     start() {
-        if (this.timer) {
+        if (this.timer !== null)
             return;
-        }
         this.timer = window.setInterval(() => {
-            const events = this.nextBatch();
-            for (const event of events) {
+            for (const event of this.nextBatch())
                 this.onEvent(event);
-            }
         }, this.intervalMs);
     }
     stop() {
-        if (!this.timer) {
+        if (this.timer === null)
             return;
-        }
         window.clearInterval(this.timer);
         this.timer = null;
     }
@@ -33,31 +29,25 @@ export class MockDataGenerator {
         return 'mock';
     }
     pickType() {
-        const total = this.config.addWeight + this.config.cancelWeight + this.config.tradeWeight;
-        const r = Math.random() * total;
-        if (r < this.config.addWeight) {
+        const { addWeight, cancelWeight, tradeWeight } = this.config;
+        const r = Math.random() * (addWeight + cancelWeight + tradeWeight);
+        if (r < addWeight)
             return 'add';
-        }
-        if (r < this.config.addWeight + this.config.cancelWeight) {
+        if (r < addWeight + cancelWeight)
             return 'cancel';
-        }
         return 'trade';
     }
     nextBatch() {
         const prices = this.orderBook.getPrices();
         const center = Math.floor(prices.length / 2);
         const count = Math.random() < this.config.burstChance ? 2 + Math.floor(Math.random() * 3) : 1;
-        const out = [];
-        for (let i = 0; i < count; i++) {
+        return Array.from({ length: count }, () => {
             const distance = Math.floor((Math.random() - 0.5) * 16);
             const idx = Math.max(0, Math.min(prices.length - 1, center + distance));
-            const price = prices[idx];
-            const side = Math.random() > 0.5 ? 'bid' : 'ask';
             const type = this.pickType();
-            const base = type === 'trade' ? 200 : 140;
-            const size = 1 + Math.floor(Math.random() * base);
-            out.push({ type, side, price, size, timestamp: Date.now() });
-        }
-        return out;
+            const side = Math.random() > 0.5 ? 'bid' : 'ask';
+            const size = 1 + Math.floor(Math.random() * (type === 'trade' ? 200 : 140));
+            return { type, side, price: prices[idx], size, timestamp: Date.now() };
+        });
     }
 }
