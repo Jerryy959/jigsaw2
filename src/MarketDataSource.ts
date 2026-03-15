@@ -15,11 +15,8 @@ export interface RealtimeSourceConfig {
   market: MarketType;
   symbol: string;
   tickSize: number;
-  stepSize?: number;
   /** If true, ignore the provided tickSize and infer it from the first snapshot. Default: false */
   autoDetectTick?: boolean;
-  /** Called once after auto-detection with the inferred stepSize */
-  onStepSizeDetected?: (stepSize: number) => void;
 }
 
 interface DepthState {
@@ -51,10 +48,7 @@ interface SourceRuntimeDeps {
   onEvent: (event: BookEvent) => void;
   symbol: string;
   tickSize: number;
-  stepSize: number;
   autoDetectTick: boolean;
-  /** Called when autoDetectTick infers a new stepSize from the snapshot */
-  onStepSizeDetected?: (stepSize: number) => void;
 }
 
 interface OrderBookUpdates {
@@ -80,13 +74,8 @@ function normalizeSymbol(exchange: Exchange, symbol: string): string {
 /**
  * Infers the tick size for an instrument from raw price strings in a depth snapshot.
  *
- * Strategy: compute the minimum positive difference between consecutive sorted prices,
- * then snap it to the nearest "clean" value (1, 2, 2.5, 5, or 10 × 10^n).
- *
- * Examples:
- *   SEIUSDT bids ["0.06350000","0.06340000",...] → min diff ≈ 0.0001 → tick = 0.0001
- *   BTCUSDT bids ["95000.02","95000.01","95000.00",...] → min diff ≈ 0.01  → tick = 0.01
- *   BTCUSDT futures ["95100.0","95099.9",...] → min diff ≈ 0.1 → tick = 0.1
+ * Strategy: minimum positive diff between consecutive sorted prices,
+ * snapped to nearest clean value (1, 2, 2.5, 5, 10 × 10^n).
  */
 function inferTickSize(priceStrings: string[]): number {
   const prices = priceStrings
@@ -95,49 +84,15 @@ function inferTickSize(priceStrings: string[]): number {
     .filter(p => Number.isFinite(p) && p > 0)
     .sort((a, b) => a - b);
 
-  if (prices.length < 2) return 0.01; // safe fallback
+  if (prices.length < 2) return 0.01;
 
   let minDiff = Infinity;
   for (let i = 1; i < prices.length; i++) {
-    // toPrecision(10) avoids floating-point noise (e.g. 0.1 - 0.0999... = 0.0000...1)
     const diff = Number((prices[i] - prices[i - 1]).toPrecision(10));
     if (diff > 0) minDiff = Math.min(minDiff, diff);
   }
 
   if (!Number.isFinite(minDiff) || minDiff <= 0) return 0.01;
-
-  // Snap to the nearest clean tick: 1, 2, 2.5, 5, 10 × 10^n
-  const exp = Math.floor(Math.log10(minDiff));
-  const mantissa = minDiff / Math.pow(10, exp);
-  let snap: number;
-  if (mantissa < 1.5) snap = 1;
-  else if (mantissa < 3.5) snap = 2.5;
-  else if (mantissa < 7.5) snap = 5;
-  else snap = 10;
-
-  return snap * Math.pow(10, exp);
-}
-
-/**
- * Infers the lot/step size (quantity increment) from raw qty strings in a snapshot.
- * Uses the same "minimum diff snapped to clean value" logic as inferTickSize.
- */
-function inferStepSize(qtyStrings: string[]): number {
-  const qtys = qtyStrings
-    .slice(0, 40)
-    .map(Number)
-    .filter(q => Number.isFinite(q) && q > 0)
-    .sort((a, b) => a - b);
-
-  if (qtys.length < 2) return 1;
-
-  let minDiff = Infinity;
-  for (let i = 1; i < qtys.length; i++) {
-    const diff = Number((qtys[i] - qtys[i - 1]).toPrecision(10));
-    if (diff > 0) minDiff = Math.min(minDiff, diff);
-  }
-
-  if (!Number.isFinite(minDiff) || minDiff <= 0) return 1;
 
   const exp = Math.floor(Math.log10(minDiff));
   const mantissa = minDiff / Math.pow(10, exp);
@@ -157,7 +112,7 @@ abstract class BaseRealtimeSource implements MarketDataSource {
   private reconnectTimers: number[] = [];
   private isStopped = false;
 
-  constructor(protected deps: SourceRuntimeDeps) { }
+  constructor(protected readonly deps: SourceRuntimeDeps) { }
 
   public start(): void {
     this.isStopped = false;
@@ -198,7 +153,7 @@ abstract class BaseRealtimeSource implements MarketDataSource {
     socket.onmessage = (ev: MessageEvent<string>): void => {
       try {
         const data = JSON.parse(ev.data);
-        if (data.result === null && data.id) return; // Binance/Bybit ack
+        if (data.result === null && data.id) return;
         onData(data as unknown);
       } catch (err) {
         console.warn(`[${this.getName()}] payload parse failed`, err);
@@ -228,8 +183,6 @@ abstract class BaseRealtimeSource implements MarketDataSource {
       this.depthState.bid.clear();
       this.depthState.ask.clear();
 
-      // ── Auto-detect tick + center from snapshot, before processing any prices ──
-      // This must run before applyDepthSide so that normalize() uses the correct tick.
       if (this.deps.autoDetectTick && !this.hasFocusedFromDepth) {
         this.reinitializeFromSnapshot(message.bids, message.asks);
       }
@@ -241,8 +194,9 @@ abstract class BaseRealtimeSource implements MarketDataSource {
   }
 
   /**
-   * Detects the correct tick size and mid price from raw snapshot price strings,
+   * Detects tick size and mid price from raw snapshot price strings,
    * then reinitializes the OrderBook so all levels align to real market increments.
+   * Quantities are stored as-is (raw base-currency units — e.g. BTC for BTCUSDT).
    */
   private reinitializeFromSnapshot(
     bids: Array<[string, string]>,
@@ -251,20 +205,13 @@ abstract class BaseRealtimeSource implements MarketDataSource {
     const allPrices = [...bids.map(b => b[0]), ...asks.map(a => a[0])];
     const tick = inferTickSize(allPrices);
 
-    // Binance REST snapshot: bids are sorted descending, asks ascending
     const topBid = bids.length ? Number(bids[0][0]) : 0;
     const topAsk = asks.length ? Number(asks[0][0]) : 0;
     const mid = topBid > 0 && topAsk > 0 ? (topBid + topAsk) / 2 : topBid || topAsk;
 
     if (mid > 0 && tick > 0) {
-      // Detect stepSize from the quantity column of both sides
-      const allQtys = [...bids.map(b => b[1]), ...asks.map(a => a[1])];
-      const detectedStep = inferStepSize(allQtys);
-      // Update internal stepSize so normalizeToStep uses the correct divisor immediately
-      this.deps.stepSize = detectedStep;
-      console.info(`[${this.getName()}] auto-detected tick=${tick}, mid=${mid}, stepSize=${detectedStep}`);
+      console.info(`[${this.getName()}] auto-detected tick=${tick}, mid=${mid}`);
       this.deps.orderBook.reinitialize(mid, tick);
-      this.deps.onStepSizeDetected?.(detectedStep);
     }
   }
 
@@ -284,7 +231,7 @@ abstract class BaseRealtimeSource implements MarketDataSource {
       type: 'trade',
       side: payload.aggressiveSide,
       price: this.deps.orderBook.normalize(price),
-      size: this.normalizeToStep(size),
+      size,
       timestamp: Date.now(),
       impactsLiquidity: false,
     });
@@ -301,20 +248,18 @@ abstract class BaseRealtimeSource implements MarketDataSource {
       const previous = state.get(price) ?? 0;
       if (nextSize === previous) continue;
 
-      const delta = this.normalizeToStep(nextSize) - this.normalizeToStep(previous);
+      // Store and emit raw base-currency quantities directly (no step-size division).
+      // This avoids all rounding / accumulation errors from imprecise step inference.
+      const delta = nextSize - previous;
       if (delta > 0) {
         this.deps.onEvent({ type: 'add', side, price, size: delta, timestamp: Date.now() });
-      } else if (delta < 0) {
+      } else {
         this.deps.onEvent({ type: 'cancel', side, price, size: Math.abs(delta), timestamp: Date.now() });
       }
 
       if (nextSize <= 0) state.delete(price);
       else state.set(price, nextSize);
     }
-  }
-
-  protected normalizeToStep(size: number): number {
-    return Math.max(0, Number((size / this.deps.stepSize).toFixed(4)));
   }
 }
 
@@ -329,20 +274,12 @@ export class BinanceMarketDataSource extends BaseRealtimeSource {
     orderBook: OrderBook,
     onEvent: (event: BookEvent) => void,
     private readonly config: {
-      symbol: string; tickSize: number; stepSize: number;
+      symbol: string; tickSize: number;
       market: MarketType; autoDetectTick: boolean;
       wsBaseUrl?: string; restBaseUrl?: string;
-      onStepSizeDetected?: (stepSize: number) => void;
     }
   ) {
-    super({
-      orderBook, onEvent,
-      symbol: config.symbol.toLowerCase(),
-      tickSize: config.tickSize,
-      stepSize: config.stepSize,
-      autoDetectTick: config.autoDetectTick,
-      onStepSizeDetected: config.onStepSizeDetected,
-    });
+    super({ orderBook, onEvent, symbol: config.symbol.toLowerCase(), tickSize: config.tickSize, autoDetectTick: config.autoDetectTick });
     this.wsBaseUrl = config.wsBaseUrl ?? (config.market === 'futures' ? 'wss://fstream.binance.com/ws' : 'wss://stream.binance.com:9443/ws');
     this.restBaseUrl = config.restBaseUrl ?? (config.market === 'futures' ? 'https://fapi.binance.com' : 'https://api.binance.com');
   }
@@ -424,20 +361,12 @@ export class BybitMarketDataSource extends BaseRealtimeSource {
     orderBook: OrderBook,
     onEvent: (event: BookEvent) => void,
     private readonly config: {
-      symbol: string; tickSize: number; stepSize: number;
+      symbol: string; tickSize: number;
       market: MarketType; autoDetectTick: boolean;
       wsBaseUrl?: string;
-      onStepSizeDetected?: (stepSize: number) => void;
     }
   ) {
-    super({
-      orderBook, onEvent,
-      symbol: config.symbol.toUpperCase(),
-      tickSize: config.tickSize,
-      stepSize: config.stepSize,
-      autoDetectTick: config.autoDetectTick,
-      onStepSizeDetected: config.onStepSizeDetected,
-    });
+    super({ orderBook, onEvent, symbol: config.symbol.toUpperCase(), tickSize: config.tickSize, autoDetectTick: config.autoDetectTick });
     const channel = config.market === 'futures' ? 'linear' : 'spot';
     this.wsBaseUrl = config.wsBaseUrl ?? `wss://stream.bybit.com/v5/public/${channel}`;
   }
@@ -482,9 +411,8 @@ export function createRealtimeSource(
   config: RealtimeSourceConfig
 ): MarketDataSource {
   const symbol = normalizeSymbol(config.exchange, config.symbol);
-  const stepSize = config.stepSize ?? (config.market === 'futures' ? 0.001 : 0.00001);
   const autoDetectTick = config.autoDetectTick ?? false;
-  const cfg = { symbol, tickSize: config.tickSize, stepSize, market: config.market, autoDetectTick, onStepSizeDetected: config.onStepSizeDetected };
+  const cfg = { symbol, tickSize: config.tickSize, market: config.market, autoDetectTick };
 
   return config.exchange === 'bybit'
     ? new BybitMarketDataSource(orderBook, onEvent, cfg)

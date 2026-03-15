@@ -7,7 +7,6 @@ import { OrderBook } from './OrderBook.js';
 import type { BookEvent, FillNotice, MyOrder, Side, SizeUnit } from './types.js';
 
 const DEFAULT_TICK = 0.1;
-const DEFAULT_STEP = 0.001;
 const MOCK_TICK = 0.25;
 
 function getNumParam(params: URLSearchParams, key: string, fallback: number, allowZero = false): number {
@@ -39,14 +38,12 @@ function bootstrap(): void {
   // BTCUSDT spot uses tighter defaults; futures/others use the same default tick/step
   const isBtcSpot = symbol.toLowerCase() === 'btcusdt' && market === 'spot';
   const realtimeTick = isBtcSpot ? 0.01 : DEFAULT_TICK;
-  const realtimeStep = isBtcSpot ? 0.00001 : DEFAULT_STEP;
 
   // autoDetectTick: enabled for realtime when user has not explicitly set tickSize in the URL.
   // The first snapshot from the exchange is used to infer the real tick for any instrument.
   const autoDetectTick = isRealtime && !params.has('tickSize');
 
   const tickSize = getNumParam(params, 'tickSize', isRealtime ? realtimeTick : MOCK_TICK);
-  const stepSize = getNumParam(params, 'stepSize', isRealtime ? realtimeStep : 1);
   const centerPrice = getNumParam(params, 'centerPrice', isRealtime ? 1 : 3856);
 
   let footprintBucketTicks = Math.max(1, intParam(params, 'fpBucketTicks', 1));
@@ -259,7 +256,6 @@ function bootstrap(): void {
   });
   renderer.init();
   renderer.setAutoFocusLocked(autoFocusLocked);
-  renderer.setStepSize(stepSize);
   renderer.setSizeUnit(sizeUnit);
 
   const recoverRenderer = (): void => {
@@ -270,13 +266,7 @@ function bootstrap(): void {
   window.addEventListener('pageshow', recoverRenderer);
 
   const marketDataSource = isRealtime
-    ? createRealtimeSource(book, onMarketEvent, {
-      exchange, market, symbol, tickSize, stepSize, autoDetectTick,
-      onStepSizeDetected: (detectedStep: number) => {
-        renderer.setStepSize(detectedStep);
-        panelDirty = true;
-      },
-    })
+    ? createRealtimeSource(book, onMarketEvent, { exchange, market, symbol, tickSize, autoDetectTick })
     : new MockDataGenerator(book, 70, onMarketEvent, { addWeight: 0.42, cancelWeight: 0.25, tradeWeight: 0.33, burstChance: 0.32 });
 
   marketDataSource.start();

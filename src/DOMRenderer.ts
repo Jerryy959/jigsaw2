@@ -38,7 +38,6 @@ export class DOMRenderer {
   private isContextLost = false;
   private autoFocusLocked = true;
   private sizeUnit: SizeUnit = 'base';
-  private stepSize = 0.001;
 
   constructor(
     private readonly orderBook: OrderBook,
@@ -93,14 +92,6 @@ export class DOMRenderer {
     this.sizeUnit = unit;
   }
 
-  /** stepSize 与 MarketDataSource 中 normalizeToStep 使用的值相同，用于还原真实数量。
-   *  base 模式：display = lots × stepSize（还原为原始 BTC/SEI 等）
-   *  quote 模式：display = lots × stepSize × price（转换为 USDT 等计价货币）
-   */
-  public setStepSize(stepSize: number): void {
-    if (Number.isFinite(stepSize) && stepSize > 0) this.stepSize = stepSize;
-  }
-
   public recoverAfterTabSwitch(): void {
     if (this.isContextLost || this.gl.isContextLost()) return;
     this.gl.viewport(0, 0, WIDTH, HEIGHT);
@@ -141,9 +132,16 @@ export class DOMRenderer {
         rects.push({ x: 0, y, w: WIDTH, h: ROW_H - 1, r: 0.14, g: 0.2, b: 0.27, a: i === anchorIndex ? 0.52 : 0.2 });
       }
 
+      // Enforce book side constraints:
+      //   bids only appear at or below current price  (above current price = already swept / not yet zeroed by depth stream)
+      //   asks only appear at or above current price  (below current price = already swept / not yet zeroed by depth stream)
+      // This eliminates the ~100ms "ghost" after fast trades, without waiting for depth-stream zeroing.
+      const visibleBid = l.price <= snap.currentPrice ? l.bidSize : 0;
+      const visibleAsk = l.price >= snap.currentPrice ? l.askSize : 0;
+
       // Bid / ask book bars
-      const bidRatio = l.bidSize / snap.maxBookSize;
-      const askRatio = l.askSize / snap.maxBookSize;
+      const bidRatio = visibleBid / snap.maxBookSize;
+      const askRatio = visibleAsk / snap.maxBookSize;
       rects.push({ x: COL_BID_BOOK + 170 * (1 - bidRatio), y: y + 1, w: 170 * bidRatio, h: ROW_H - 2, r: 0.24, g: 0.55, b: 0.78, a: 0.86 });
       rects.push({ x: COL_ASK_BOOK, y: y + 1, w: 170 * askRatio, h: ROW_H - 2, r: 0.78, g: 0.36, b: 0.33, a: 0.86 });
 
@@ -212,8 +210,12 @@ export class DOMRenderer {
       const myAsk = this.myOrders.getTopOrderAt(l.price, 'ask');
       const isAnchor = i === anchorIndex;
 
+      // Same side constraint as in rect rendering
+      const visibleBid = l.price <= snap.currentPrice ? l.bidSize : 0;
+      const visibleAsk = l.price >= snap.currentPrice ? l.askSize : 0;
+
       ctx.fillStyle = '#d8ecfc';
-      ctx.fillText(this.formatSize(l.bidSize, snap.currentPrice), COL_BID_BOOK + 7, y);
+      ctx.fillText(this.formatSize(visibleBid, snap.currentPrice), COL_BID_BOOK + 7, y);
 
       ctx.fillStyle = '#c5dbf3';
       ctx.fillText(this.formatSize(l.sellTraded, snap.currentPrice), COL_BID_FOOT + 8, y);
@@ -226,7 +228,7 @@ export class DOMRenderer {
       ctx.fillText(this.formatSize(l.buyTraded, snap.currentPrice), COL_ASK_FOOT + 8, y);
 
       ctx.fillStyle = '#ffe2e2';
-      ctx.fillText(this.formatSize(l.askSize, snap.currentPrice), COL_ASK_BOOK + 7, y);
+      ctx.fillText(this.formatSize(visibleAsk, snap.currentPrice), COL_ASK_BOOK + 7, y);
 
       ctx.font = '11px sans-serif';
       if (myBid) { ctx.fillStyle = '#ffeb7a'; ctx.fillText(`#${Math.floor(myBid.aheadVolume) + 1}`, COL_BID_BOOK + 120, y - 2); }
@@ -255,45 +257,39 @@ export class DOMRenderer {
   }
 
   /**
-   * 将内部存储的 lots 值（= raw_qty / stepSize）格式化为当前选择的显示单位。
+   * Formats a size value for display.
    *
-   *  base  → lots × stepSize         (原始 BTC/SEI/…)
-   *  quote → lots × stepSize × price (USDT/…)
-   *  lots  → lots                    (最小合约张数，历史格式)
+   * The OrderBook stores raw base-currency quantities directly
+   * (e.g. BTC for BTCUSDT, SEI for SEIUSDT) — no stepSize conversion at rest.
+   *
+   *   base / lots → display raw quantity with adaptive precision
+   *   quote       → raw quantity × currentPrice  (= USDT notional value)
    */
-  private formatSize(lots: number, currentPrice: number): string {
-    if (!Number.isFinite(lots) || lots <= 0) return '0';
+  private formatSize(rawQty: number, currentPrice: number): string {
+    if (!Number.isFinite(rawQty) || rawQty <= 0) return '0';
 
-    if (this.sizeUnit === 'lots') {
-      // 历史行为：直接显示张数
-      const v = lots;
-      if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + 'M';
-      if (v >= 1_000) return Math.round(v).toString();
-      return v.toFixed(2).replace(/\.?0+$/, '');
+    if (this.sizeUnit === 'quote') {
+      const usdt = rawQty * currentPrice;
+      if (usdt >= 1_000_000_000) return (usdt / 1_000_000).toFixed(0) + 'M';
+      if (usdt >= 1_000_000) return (usdt / 1_000_000).toFixed(2) + 'M';
+      if (usdt >= 100_000) return (usdt / 1_000).toFixed(0) + 'K';
+      if (usdt >= 10_000) return Math.round(usdt).toString();
+      if (usdt >= 1_000) return usdt.toFixed(0);
+      return usdt.toFixed(1);
     }
 
-    const base = lots * this.stepSize; // 还原为原始数量 (BTC 等)
-
-    if (this.sizeUnit === 'base') {
-      if (base >= 100_000) return (base / 1_000).toFixed(0) + 'K';
-      if (base >= 10_000) return Math.round(base).toString();
-      if (base >= 1_000) return base.toFixed(0);
-      if (base >= 100) return base.toFixed(1);
-      if (base >= 10) return base.toFixed(2);
-      if (base >= 1) return base.toFixed(3);
-      if (base >= 0.1) return base.toFixed(4);
-      if (base >= 0.001) return base.toFixed(5);
-      return base.toFixed(6);
-    }
-
-    // quote (USDT)
-    const quote = base * currentPrice;
-    if (quote >= 1_000_000_000) return (quote / 1_000_000).toFixed(0) + 'M';
-    if (quote >= 1_000_000) return (quote / 1_000_000).toFixed(2) + 'M';
-    if (quote >= 100_000) return (quote / 1_000).toFixed(0) + 'K';
-    if (quote >= 10_000) return Math.round(quote).toString();
-    if (quote >= 1_000) return quote.toFixed(0);
-    return quote.toFixed(1);
+    // base and lots: adaptive precision for any instrument
+    const v = rawQty;
+    if (v >= 1_000_000) return (v / 1_000_000).toFixed(2) + 'M';
+    if (v >= 100_000) return (v / 1_000).toFixed(0) + 'K';
+    if (v >= 10_000) return Math.round(v).toString();
+    if (v >= 1_000) return v.toFixed(0);
+    if (v >= 100) return v.toFixed(1);
+    if (v >= 10) return v.toFixed(2);
+    if (v >= 1) return v.toFixed(3);
+    if (v >= 0.1) return v.toFixed(4);
+    if (v >= 0.001) return v.toFixed(5);
+    return v.toFixed(6);
   }
 
   private drawRects(rects: RectDraw[]): void {
