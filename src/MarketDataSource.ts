@@ -15,6 +15,7 @@ export interface RealtimeSourceConfig {
   market: MarketType;
   symbol: string;
   tickSize: number;
+  stepSize?: number;
 }
 
 interface DepthState {
@@ -23,15 +24,15 @@ interface DepthState {
 }
 
 interface BinanceDepthMessage {
+  e: string; // Event type
+  E: number; // Event time
+  s: string; // Symbol
+  U: number; // First update ID in event
+  u: number; // Final update ID in event
   b?: Array<[string, string]>;
   a?: Array<[string, string]>;
 }
 
-interface BinanceTradeMessage {
-  p?: string;
-  q?: string;
-  m?: boolean;
-}
 
 interface BybitOrderBookMessage {
   topic?: string;
@@ -56,6 +57,7 @@ interface SourceRuntimeDeps {
   onEvent: (event: BookEvent) => void;
   symbol: string;
   tickSize: number;
+  stepSize: number;
 }
 
 interface OrderBookUpdates {
@@ -82,22 +84,36 @@ function normalizeSymbol(exchange: Exchange, symbol: string): string {
 }
 
 abstract class BaseRealtimeSource implements MarketDataSource {
-  private readonly depthState: DepthState = { bid: new Map(), ask: new Map() };
+  protected readonly depthState: DepthState = { bid: new Map(), ask: new Map() };
   private sockets: WebSocket[] = [];
   private hasFocusedFromDepth = false;
+  private reconnectTimers: number[] = [];
+  private isStopped = false;
 
   constructor(protected readonly deps: SourceRuntimeDeps) {}
 
   public start(): void {
+    this.isStopped = false;
     if (this.sockets.length > 0) {
       return;
     }
+    this.connect();
+  }
+
+  private connect(): void {
+    if (this.isStopped) return;
     this.sockets = this.createSockets();
   }
 
   public stop(): void {
-    this.sockets.forEach((socket) => socket.close());
+    this.isStopped = true;
+    this.sockets.forEach((socket) => {
+      socket.onclose = null; // Prevent reconnect on manual stop
+      socket.close();
+    });
     this.sockets = [];
+    this.reconnectTimers.forEach(clearTimeout);
+    this.reconnectTimers = [];
     this.depthState.bid.clear();
     this.depthState.ask.clear();
     this.hasFocusedFromDepth = false;
@@ -107,24 +123,53 @@ abstract class BaseRealtimeSource implements MarketDataSource {
 
   protected abstract createSockets(): WebSocket[];
 
-  protected openSocket(url: string, onData: (payload: unknown) => void, onOpen?: (socket: WebSocket) => void): WebSocket {
+  protected openSocket(
+    url: string,
+    onData: (payload: unknown) => void,
+    onOpen?: (socket: WebSocket) => void,
+    reconnectDelay = 1000
+  ): WebSocket {
     const socket = new WebSocket(url);
+    let pingInterval: number | null = null;
+
     socket.onopen = () => {
+      console.info(`[${this.getName()}] websocket opened: ${url}`);
       onOpen?.(socket);
+      // Heartbeat: Binance server sends pings, but we can also send pings to keep connection alive
+      pingInterval = window.setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ method: 'PING' }));
+        }
+      }, 30000);
     };
+
     socket.onmessage = (event: MessageEvent<string>): void => {
       try {
-        onData(JSON.parse(event.data) as unknown);
+        const data = JSON.parse(event.data);
+        // Handle Binance/Bybit ping-pong if they send it as a message
+        if (data.result === null && data.id) return; 
+        onData(data as unknown);
       } catch (error) {
         console.warn(`[${this.getName()}] payload parse failed`, error);
       }
     };
+
     socket.onerror = (error: Event): void => {
-      console.error(`[${this.getName()}] websocket error`, error);
+      console.error(`[${this.getName()}] websocket error: ${url}`, error);
     };
+
     socket.onclose = (): void => {
-      console.warn(`[${this.getName()}] websocket closed:`, url);
+      if (pingInterval) clearInterval(pingInterval);
+      console.warn(`[${this.getName()}] websocket closed: ${url}. Reconnecting in ${reconnectDelay}ms...`);
+      if (!this.isStopped) {
+        const timer = window.setTimeout(() => {
+          this.reconnectTimers = this.reconnectTimers.filter(t => t !== timer);
+          this.connect();
+        }, reconnectDelay);
+        this.reconnectTimers.push(timer);
+      }
     };
+
     return socket;
   }
 
@@ -160,7 +205,7 @@ abstract class BaseRealtimeSource implements MarketDataSource {
       type: 'trade',
       side: payload.aggressiveSide,
       price: this.deps.orderBook.normalize(rawPrice),
-      size: this.normalizeToTick(rawSize),
+      size: this.normalizeToStep(rawSize),
       timestamp: Date.now(),
       impactsLiquidity: false,
     });
@@ -182,13 +227,13 @@ abstract class BaseRealtimeSource implements MarketDataSource {
         continue;
       }
 
-      const normalizedNext = this.normalizeToTick(nextSize);
-      const normalizedPrev = this.normalizeToTick(previous);
+      const normalizedNext = this.normalizeToStep(nextSize);
+      const normalizedPrev = this.normalizeToStep(previous);
       const delta = normalizedNext - normalizedPrev;
 
       if (delta > 0) {
         this.deps.onEvent({ type: 'add', side, price, size: delta, timestamp: Date.now() });
-      } else {
+      } else if (delta < 0) {
         this.deps.onEvent({ type: 'cancel', side, price, size: Math.abs(delta), timestamp: Date.now() });
       }
 
@@ -200,21 +245,33 @@ abstract class BaseRealtimeSource implements MarketDataSource {
     }
   }
 
-  protected normalizeToTick(size: number): number {
-    return Math.max(0, Number((size / this.deps.tickSize).toFixed(4)));
+  protected normalizeToStep(size: number): number {
+    // Use stepSize for quantity normalization
+    return Math.max(0, Number((size / this.deps.stepSize).toFixed(4)));
   }
 }
 
 export class BinanceMarketDataSource extends BaseRealtimeSource {
   private readonly wsBaseUrl: string;
+  private readonly restBaseUrl: string;
+  private lastUpdateId = -1;
+  private buffer: BinanceDepthMessage[] = [];
+  private isSyncing = false;
 
   constructor(
     orderBook: OrderBook,
     onEvent: (event: BookEvent) => void,
-    private readonly config: { symbol: string; tickSize: number; market: MarketType; wsBaseUrl?: string }
+    private readonly config: { symbol: string; tickSize: number; stepSize: number; market: MarketType; wsBaseUrl?: string; restBaseUrl?: string }
   ) {
-    super({ orderBook, onEvent, symbol: config.symbol.toLowerCase(), tickSize: config.tickSize });
+    super({ 
+      orderBook, 
+      onEvent, 
+      symbol: config.symbol.toLowerCase(), 
+      tickSize: config.tickSize,
+      stepSize: config.stepSize
+    });
     this.wsBaseUrl = config.wsBaseUrl ?? (config.market === 'futures' ? 'wss://fstream.binance.com/ws' : 'wss://stream.binance.com:9443/ws');
+    this.restBaseUrl = config.restBaseUrl ?? (config.market === 'futures' ? 'https://fapi.binance.com' : 'https://api.binance.com');
   }
 
   public getName(): string {
@@ -222,22 +279,101 @@ export class BinanceMarketDataSource extends BaseRealtimeSource {
   }
 
   protected createSockets(): WebSocket[] {
+    this.lastUpdateId = -1;
+    this.buffer = [];
+    this.isSyncing = true;
+
     const depthSocket = this.openSocket(`${this.wsBaseUrl}/${this.deps.symbol}@depth@100ms`, (payload) => {
       const message = payload as BinanceDepthMessage;
-      this.applyOrderBookUpdates({ bids: message.b ?? [], asks: message.a ?? [], resetState: false });
+      if (message.e !== 'depthUpdate') return;
+
+      if (this.isSyncing) {
+        this.buffer.push(message);
+        if (this.lastUpdateId === -1) {
+          this.fetchSnapshot();
+        } else {
+          this.processBuffer();
+        }
+      } else {
+        this.handleIncrementalUpdate(message);
+      }
     });
 
     const tradeSocket = this.openSocket(`${this.wsBaseUrl}/${this.deps.symbol}@trade`, (payload) => {
-      const message = payload as BinanceTradeMessage;
+      const message = payload as any;
+      if (message.e !== 'trade') return;
       this.applyTrade({
         price: message.p ?? '',
         size: message.q ?? '',
-        // Binance `m=true` means buyer is maker, so aggressive side is sell.
         aggressiveSide: message.m ? 'ask' : 'bid',
       });
     });
 
     return [depthSocket, tradeSocket];
+  }
+
+  private async fetchSnapshot(): Promise<void> {
+    try {
+      const url = `${this.restBaseUrl}${this.config.market === 'futures' ? '/fapi/v1/depth' : '/api/v3/depth'}?symbol=${this.deps.symbol.toUpperCase()}&limit=1000`;
+      const response = await fetch(url);
+      const data = await response.json();
+      
+      this.lastUpdateId = data.lastUpdateId || data.u;
+      console.info(`[${this.getName()}] Snapshot fetched, lastUpdateId: ${this.lastUpdateId}`);
+
+      this.applyOrderBookUpdates({
+        bids: data.bids || [],
+        asks: data.asks || [],
+        resetState: true
+      });
+
+      this.processBuffer();
+    } catch (error) {
+      console.error(`[${this.getName()}] Failed to fetch snapshot`, error);
+      // Retry snapshot after delay
+      setTimeout(() => this.fetchSnapshot(), 5000);
+    }
+  }
+
+  private processBuffer(): void {
+    if (this.lastUpdateId === -1) return;
+
+    for (const msg of this.buffer) {
+      // For Spot: The first processed event should have U <= lastUpdateId+1 AND u >= lastUpdateId+1
+      // For Futures: The first processed event should have U <= lastUpdateId AND u >= lastUpdateId
+      const isFirstMessage = this.config.market === 'futures' 
+        ? (msg.U <= this.lastUpdateId && msg.u >= this.lastUpdateId)
+        : (msg.U <= this.lastUpdateId + 1 && msg.u >= this.lastUpdateId + 1);
+
+      if (this.isSyncing) {
+        if (isFirstMessage) {
+          this.isSyncing = false;
+          this.handleIncrementalUpdate(msg);
+        }
+      } else {
+        this.handleIncrementalUpdate(msg);
+      }
+    }
+    this.buffer = [];
+  }
+
+  private handleIncrementalUpdate(msg: BinanceDepthMessage): void {
+    // Sequence validation
+    if (this.config.market === 'futures') {
+      // For futures, pu should match previous u
+      // But for simplicity and robustness, we just check if it's newer
+      if (msg.u <= this.lastUpdateId) return;
+    } else {
+      // For spot, U should be lastUpdateId + 1
+      if (msg.u <= this.lastUpdateId) return;
+    }
+
+    this.applyOrderBookUpdates({
+      bids: msg.b ?? [],
+      asks: msg.a ?? [],
+      resetState: false
+    });
+    this.lastUpdateId = msg.u;
   }
 }
 
@@ -247,9 +383,15 @@ export class BybitMarketDataSource extends BaseRealtimeSource {
   constructor(
     orderBook: OrderBook,
     onEvent: (event: BookEvent) => void,
-    private readonly config: { symbol: string; tickSize: number; market: MarketType; wsBaseUrl?: string }
+    private readonly config: { symbol: string; tickSize: number; stepSize: number; market: MarketType; wsBaseUrl?: string }
   ) {
-    super({ orderBook, onEvent, symbol: config.symbol.toUpperCase(), tickSize: config.tickSize });
+    super({ 
+      orderBook, 
+      onEvent, 
+      symbol: config.symbol.toUpperCase(), 
+      tickSize: config.tickSize,
+      stepSize: config.stepSize
+    });
     const marketChannel = config.market === 'futures' ? 'linear' : 'spot';
     this.wsBaseUrl = config.wsBaseUrl ?? `wss://stream.bybit.com/v5/public/${marketChannel}`;
   }
@@ -310,10 +452,14 @@ export function createRealtimeSource(
   config: RealtimeSourceConfig
 ): MarketDataSource {
   const normalizedSymbol = normalizeSymbol(config.exchange, config.symbol);
+  // Default stepSize if not provided
+  const stepSize = config.stepSize ?? (config.market === 'futures' ? 0.001 : 0.00001);
+
   if (config.exchange === 'bybit') {
     return new BybitMarketDataSource(orderBook, onEvent, {
       symbol: normalizedSymbol,
       tickSize: config.tickSize,
+      stepSize: stepSize,
       market: config.market,
     });
   }
@@ -321,6 +467,7 @@ export function createRealtimeSource(
   return new BinanceMarketDataSource(orderBook, onEvent, {
     symbol: normalizedSymbol,
     tickSize: config.tickSize,
+    stepSize: stepSize,
     market: config.market,
   });
 }
