@@ -4,7 +4,7 @@ import { MockDataGenerator } from './MockDataGenerator.js';
 import { MyOrderManager } from './MyOrderManager.js';
 import { MockMatchingEngine } from './MockMatchingEngine.js';
 import { OrderBook } from './OrderBook.js';
-import type { BookEvent, FillNotice, MyOrder, Side } from './types.js';
+import type { BookEvent, FillNotice, MyOrder, Side, SizeUnit } from './types.js';
 
 const DEFAULT_TICK = 0.1;
 const DEFAULT_STEP = 0.001;
@@ -66,13 +66,14 @@ function bootstrap(): void {
   let orderSize = 1;
   let renderIntervalMs = 0;
   let autoFocusLocked = true;
+  const rawUnit = params.get('sizeUnit');
+  let sizeUnit: SizeUnit = (rawUnit === 'quote' || rawUnit === 'lots') ? rawUnit : 'base';
   let panelDirty = true;
   let lastOrdersVersion = -1;
   let lastRenderAt = 0;
 
   const applyEvent = (event: BookEvent): void => {
     book.applyEvent(event);
-    latestPriceEl.textContent = book.formatPrice(book.getSnapshot().currentPrice);
     const fills = mine.onBookEvent(event);
     fills.forEach(showFillToast);
     if (mine.getVersion() !== lastOrdersVersion) panelDirty = true;
@@ -135,6 +136,14 @@ function bootstrap(): void {
         </select>
       </div>
       <div class="refresh-control">
+        <label>数量单位</label>
+        <div class="unit-btn-group">
+          <button class="unit-btn ${sizeUnit === 'base' ? 'active' : ''}" data-unit="base">基础货币</button>
+          <button class="unit-btn ${sizeUnit === 'quote' ? 'active' : ''}" data-unit="quote">USDT</button>
+          <button class="unit-btn ${sizeUnit === 'lots' ? 'active' : ''}" data-unit="lots">张</button>
+        </div>
+      </div>
+      <div class="refresh-control">
         <label for="focus-lock-mode">价格自动聚焦</label>
         <select id="focus-lock-mode" class="refresh-select">
           <option value="locked" ${autoFocusLocked ? 'selected' : ''}>锁定跟随买一卖一</option>
@@ -183,6 +192,7 @@ function bootstrap(): void {
     if (sel('exchange-mode')) next.set('exchange', sel('exchange-mode')!);
     if (sel('market-mode')) next.set('market', sel('market-mode')!);
     if (inp('symbol-input')) next.set('symbol', inp('symbol-input')!);
+    next.set('sizeUnit', sizeUnit); // persist across reload
     window.location.search = next.toString();
   };
 
@@ -222,6 +232,14 @@ function bootstrap(): void {
       return;
     }
 
+    const unitBtn = target.closest('.unit-btn') as HTMLButtonElement | null;
+    if (unitBtn?.dataset.unit) {
+      sizeUnit = unitBtn.dataset.unit as SizeUnit;
+      renderer.setSizeUnit(sizeUnit);
+      panelDirty = true;
+      return;
+    }
+
     const cancelBtn = target.closest('.cancel-btn') as HTMLButtonElement | null;
     if (cancelBtn?.dataset.orderId) cancelOrderById(cancelBtn.dataset.orderId);
   });
@@ -241,6 +259,8 @@ function bootstrap(): void {
   });
   renderer.init();
   renderer.setAutoFocusLocked(autoFocusLocked);
+  renderer.setStepSize(stepSize);
+  renderer.setSizeUnit(sizeUnit);
 
   const recoverRenderer = (): void => {
     renderer.recoverAfterTabSwitch();
@@ -250,17 +270,30 @@ function bootstrap(): void {
   window.addEventListener('pageshow', recoverRenderer);
 
   const marketDataSource = isRealtime
-    ? createRealtimeSource(book, onMarketEvent, { exchange, market, symbol, tickSize, stepSize, autoDetectTick })
+    ? createRealtimeSource(book, onMarketEvent, {
+      exchange, market, symbol, tickSize, stepSize, autoDetectTick,
+      onStepSizeDetected: (detectedStep: number) => {
+        renderer.setStepSize(detectedStep);
+        panelDirty = true;
+      },
+    })
     : new MockDataGenerator(book, 70, onMarketEvent, { addWeight: 0.42, cancelWeight: 0.25, tradeWeight: 0.33, burstChance: 0.32 });
 
   marketDataSource.start();
   console.info(`[MarketData] source started: ${marketDataSource.getName()}`);
 
+  let lastDisplayedPrice = '';
   const loop = (): void => {
     const now = performance.now();
     if (renderIntervalMs === 0 || now - lastRenderAt >= renderIntervalMs) {
       renderer.render();
       lastRenderAt = now;
+      // Always keep the price display in sync with the book — not just on trade events
+      const formatted = book.formatPrice(book.getSnapshot().currentPrice);
+      if (formatted !== lastDisplayedPrice) {
+        latestPriceEl.textContent = formatted;
+        lastDisplayedPrice = formatted;
+      }
     }
     if (panelDirty) renderOrdersPanel();
     requestAnimationFrame(loop);

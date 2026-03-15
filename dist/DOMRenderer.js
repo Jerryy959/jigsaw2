@@ -24,6 +24,8 @@ export class DOMRenderer {
         this.lastCurrentPrice = null;
         this.isContextLost = false;
         this.autoFocusLocked = true;
+        this.sizeUnit = 'base';
+        this.stepSize = 0.001;
         // ── Event handlers ────────────────────────────────────────────────────────
         this.handleWheel = (ev) => {
             if (this.autoFocusLocked)
@@ -117,6 +119,17 @@ export class DOMRenderer {
             this.wheelAccumulator = 0;
         }
     }
+    setSizeUnit(unit) {
+        this.sizeUnit = unit;
+    }
+    /** stepSize 与 MarketDataSource 中 normalizeToStep 使用的值相同，用于还原真实数量。
+     *  base 模式：display = lots × stepSize（还原为原始 BTC/SEI 等）
+     *  quote 模式：display = lots × stepSize × price（转换为 USDT 等计价货币）
+     */
+    setStepSize(stepSize) {
+        if (Number.isFinite(stepSize) && stepSize > 0)
+            this.stepSize = stepSize;
+    }
     recoverAfterTabSwitch() {
         if (this.isContextLost || this.gl.isContextLost())
             return;
@@ -196,13 +209,15 @@ export class DOMRenderer {
         // Header background
         ctx.fillStyle = '#202a34';
         ctx.fillRect(0, 0, WIDTH, HEADER_H - 2);
+        // Column headers — show current size unit alongside the book label
+        const unitLabel = this.sizeUnit === 'base' ? '(基础)' : this.sizeUnit === 'quote' ? '(USDT)' : '(张)';
         ctx.fillStyle = '#d5e3ee';
         ctx.font = 'bold 12px sans-serif';
-        ctx.fillText('BID BOOK', COL_BID_BOOK + 45, 24);
+        ctx.fillText(`BID ${unitLabel}`, COL_BID_BOOK + 30, 24);
         ctx.fillText('SELL CUM', COL_BID_FOOT + 20, 24);
         ctx.fillText('PRICE', COL_PRICE + 33, 24);
         ctx.fillText('BUY CUM', COL_ASK_FOOT + 22, 24);
-        ctx.fillText('ASK BOOK', COL_ASK_BOOK + 45, 24);
+        ctx.fillText(`ASK ${unitLabel}`, COL_ASK_BOOK + 30, 24);
         ctx.fillStyle = '#89a2b7';
         ctx.font = '11px sans-serif';
         ctx.fillText(`滚轮滚动 / Shift加速 / Home归中 / 偏移:${Math.round(this.displayScrollOffset)} / ${this.autoFocusLocked ? '锁定跟随' : '解锁滑动'}`, 320, 40);
@@ -213,16 +228,16 @@ export class DOMRenderer {
             const myAsk = this.myOrders.getTopOrderAt(l.price, 'ask');
             const isAnchor = i === anchorIndex;
             ctx.fillStyle = '#d8ecfc';
-            ctx.fillText(Math.round(l.bidSize).toString(), COL_BID_BOOK + 7, y);
+            ctx.fillText(this.formatSize(l.bidSize, snap.currentPrice), COL_BID_BOOK + 7, y);
             ctx.fillStyle = '#c5dbf3';
-            ctx.fillText(this.formatCumValue(l.sellTraded), COL_BID_FOOT + 8, y);
+            ctx.fillText(this.formatSize(l.sellTraded, snap.currentPrice), COL_BID_FOOT + 8, y);
             ctx.fillStyle = isAnchor ? '#ffffff' : '#e8ecef';
             ctx.font = isAnchor ? 'bold 16px monospace' : '15px monospace';
             ctx.fillText(this.orderBook.formatPrice(l.price), COL_PRICE + 10, y);
             ctx.fillStyle = '#f7d4d4';
-            ctx.fillText(this.formatCumValue(l.buyTraded), COL_ASK_FOOT + 8, y);
+            ctx.fillText(this.formatSize(l.buyTraded, snap.currentPrice), COL_ASK_FOOT + 8, y);
             ctx.fillStyle = '#ffe2e2';
-            ctx.fillText(Math.round(l.askSize).toString(), COL_ASK_BOOK + 7, y);
+            ctx.fillText(this.formatSize(l.askSize, snap.currentPrice), COL_ASK_BOOK + 7, y);
             ctx.font = '11px sans-serif';
             if (myBid) {
                 ctx.fillStyle = '#ffeb7a';
@@ -248,14 +263,58 @@ export class DOMRenderer {
         ctx.font = '11px sans-serif';
         ctx.fillText(`current: ${this.orderBook.formatPrice(snap.currentPrice)}  bestBid: ${this.orderBook.formatPrice(snap.bestBid)}  bestAsk: ${this.orderBook.formatPrice(snap.bestAsk)}`, 10, HEIGHT - 12);
     }
-    formatCumValue(value) {
-        if (!Number.isFinite(value) || value <= 0)
+    /**
+     * 将内部存储的 lots 值（= raw_qty / stepSize）格式化为当前选择的显示单位。
+     *
+     *  base  → lots × stepSize         (原始 BTC/SEI/…)
+     *  quote → lots × stepSize × price (USDT/…)
+     *  lots  → lots                    (最小合约张数，历史格式)
+     */
+    formatSize(lots, currentPrice) {
+        if (!Number.isFinite(lots) || lots <= 0)
             return '0';
-        if (value >= 1000)
-            return Math.round(value).toString();
-        if (value >= 100)
-            return value.toFixed(1);
-        return value.toFixed(2);
+        if (this.sizeUnit === 'lots') {
+            // 历史行为：直接显示张数
+            const v = lots;
+            if (v >= 1000000)
+                return (v / 1000000).toFixed(1) + 'M';
+            if (v >= 1000)
+                return Math.round(v).toString();
+            return v.toFixed(2).replace(/\.?0+$/, '');
+        }
+        const base = lots * this.stepSize; // 还原为原始数量 (BTC 等)
+        if (this.sizeUnit === 'base') {
+            if (base >= 100000)
+                return (base / 1000).toFixed(0) + 'K';
+            if (base >= 10000)
+                return Math.round(base).toString();
+            if (base >= 1000)
+                return base.toFixed(0);
+            if (base >= 100)
+                return base.toFixed(1);
+            if (base >= 10)
+                return base.toFixed(2);
+            if (base >= 1)
+                return base.toFixed(3);
+            if (base >= 0.1)
+                return base.toFixed(4);
+            if (base >= 0.001)
+                return base.toFixed(5);
+            return base.toFixed(6);
+        }
+        // quote (USDT)
+        const quote = base * currentPrice;
+        if (quote >= 1000000000)
+            return (quote / 1000000).toFixed(0) + 'M';
+        if (quote >= 1000000)
+            return (quote / 1000000).toFixed(2) + 'M';
+        if (quote >= 100000)
+            return (quote / 1000).toFixed(0) + 'K';
+        if (quote >= 10000)
+            return Math.round(quote).toString();
+        if (quote >= 1000)
+            return quote.toFixed(0);
+        return quote.toFixed(1);
     }
     drawRects(rects) {
         if (this.isContextLost || this.gl.isContextLost())

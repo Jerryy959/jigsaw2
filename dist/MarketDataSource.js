@@ -46,6 +46,39 @@ function inferTickSize(priceStrings) {
         snap = 10;
     return snap * Math.pow(10, exp);
 }
+/**
+ * Infers the lot/step size (quantity increment) from raw qty strings in a snapshot.
+ * Uses the same "minimum diff snapped to clean value" logic as inferTickSize.
+ */
+function inferStepSize(qtyStrings) {
+    const qtys = qtyStrings
+        .slice(0, 40)
+        .map(Number)
+        .filter(q => Number.isFinite(q) && q > 0)
+        .sort((a, b) => a - b);
+    if (qtys.length < 2)
+        return 1;
+    let minDiff = Infinity;
+    for (let i = 1; i < qtys.length; i++) {
+        const diff = Number((qtys[i] - qtys[i - 1]).toPrecision(10));
+        if (diff > 0)
+            minDiff = Math.min(minDiff, diff);
+    }
+    if (!Number.isFinite(minDiff) || minDiff <= 0)
+        return 1;
+    const exp = Math.floor(Math.log10(minDiff));
+    const mantissa = minDiff / Math.pow(10, exp);
+    let snap;
+    if (mantissa < 1.5)
+        snap = 1;
+    else if (mantissa < 3.5)
+        snap = 2.5;
+    else if (mantissa < 7.5)
+        snap = 5;
+    else
+        snap = 10;
+    return snap * Math.pow(10, exp);
+}
 class BaseRealtimeSource {
     constructor(deps) {
         this.deps = deps;
@@ -132,8 +165,14 @@ class BaseRealtimeSource {
         const topAsk = asks.length ? Number(asks[0][0]) : 0;
         const mid = topBid > 0 && topAsk > 0 ? (topBid + topAsk) / 2 : topBid || topAsk;
         if (mid > 0 && tick > 0) {
-            console.info(`[${this.getName()}] auto-detected tick=${tick}, mid=${mid}`);
+            // Detect stepSize from the quantity column of both sides
+            const allQtys = [...bids.map(b => b[1]), ...asks.map(a => a[1])];
+            const detectedStep = inferStepSize(allQtys);
+            // Update internal stepSize so normalizeToStep uses the correct divisor immediately
+            this.deps.stepSize = detectedStep;
+            console.info(`[${this.getName()}] auto-detected tick=${tick}, mid=${mid}, stepSize=${detectedStep}`);
             this.deps.orderBook.reinitialize(mid, tick);
+            this.deps.onStepSizeDetected?.(detectedStep);
         }
     }
     focusCurrentPriceOnce() {
@@ -194,6 +233,7 @@ export class BinanceMarketDataSource extends BaseRealtimeSource {
             tickSize: config.tickSize,
             stepSize: config.stepSize,
             autoDetectTick: config.autoDetectTick,
+            onStepSizeDetected: config.onStepSizeDetected,
         });
         this.config = config;
         this.lastUpdateId = -1;
@@ -281,6 +321,7 @@ export class BybitMarketDataSource extends BaseRealtimeSource {
             tickSize: config.tickSize,
             stepSize: config.stepSize,
             autoDetectTick: config.autoDetectTick,
+            onStepSizeDetected: config.onStepSizeDetected,
         });
         this.config = config;
         const channel = config.market === 'futures' ? 'linear' : 'spot';
@@ -313,7 +354,7 @@ export function createRealtimeSource(orderBook, onEvent, config) {
     const symbol = normalizeSymbol(config.exchange, config.symbol);
     const stepSize = config.stepSize ?? (config.market === 'futures' ? 0.001 : 0.00001);
     const autoDetectTick = config.autoDetectTick ?? false;
-    const cfg = { symbol, tickSize: config.tickSize, stepSize, market: config.market, autoDetectTick };
+    const cfg = { symbol, tickSize: config.tickSize, stepSize, market: config.market, autoDetectTick, onStepSizeDetected: config.onStepSizeDetected };
     return config.exchange === 'bybit'
         ? new BybitMarketDataSource(orderBook, onEvent, cfg)
         : new BinanceMarketDataSource(orderBook, onEvent, cfg);

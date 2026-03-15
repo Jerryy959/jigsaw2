@@ -55,7 +55,6 @@ body {
   padding: 8px;
 }
 
-
 .orders-title-row {
   display: flex;
   justify-content: space-between;
@@ -99,7 +98,6 @@ body {
   color: #b8cddd;
   margin-bottom: 8px;
 }
-
 
 .refresh-control {
   display: flex;
@@ -193,7 +191,9 @@ body {
   background: rgba(17, 65, 53, 0.95);
   color: #d7fff2;
   font-size: 13px;
-  transition: opacity 0.25s ease, transform 0.25s ease;
+  transition:
+    opacity 0.25s ease,
+    transform 0.25s ease;
 }
 
 .toast.hide {
@@ -261,7 +261,6 @@ canvas {
   text-shadow: 0 0 14px rgba(248, 253, 112, 0.35);
 }
 
-
 .footprint-control-grid {
   display: grid;
   grid-template-columns: 72px 1fr;
@@ -275,8 +274,33 @@ canvas {
   align-items: center;
 }
 
-
 .footprint-hint {
   font-size: 11px;
   color: #89a2b7;
+}
+
+.unit-btn-group {
+  display: flex;
+  gap: 4px;
+}
+
+.unit-btn {
+  border: 1px solid #425462;
+  background: #243340;
+  color: #a9becc;
+  font-size: 11px;
+  padding: 2px 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.unit-btn:hover {
+  background: #2d4050;
+}
+
+.unit-btn.active {
+  background: #1e4a6e;
+  border-color: #4a9fd4;
+  color: #d7f0ff;
+  font-weight: 700;
 }

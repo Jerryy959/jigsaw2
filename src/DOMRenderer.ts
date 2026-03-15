@@ -1,6 +1,6 @@
 import { OrderBook } from './OrderBook.js';
 import { MyOrderManager } from './MyOrderManager.js';
-import type { DOMSnapshot, Side } from './types.js';
+import type { DOMSnapshot, Side, SizeUnit } from './types.js';
 
 interface RectDraw {
   x: number; y: number; w: number; h: number;
@@ -10,14 +10,14 @@ interface RectDraw {
 // Column layout: bid book | bid footprint | price | ask footprint | ask book
 const COL_BID_BOOK = 10;
 const COL_BID_FOOT = 195;
-const COL_PRICE    = 305;
+const COL_PRICE = 305;
 const COL_ASK_FOOT = 415;
 const COL_ASK_BOOK = 525;
 
-const WIDTH        = 900;
-const HEIGHT       = 1080;
-const ROW_H        = 20;
-const HEADER_H     = 44;
+const WIDTH = 900;
+const HEIGHT = 1080;
+const ROW_H = 20;
+const HEADER_H = 44;
 const VISIBLE_ROWS = 48;
 
 export class DOMRenderer {
@@ -37,13 +37,15 @@ export class DOMRenderer {
   private lastCurrentPrice: number | null = null;
   private isContextLost = false;
   private autoFocusLocked = true;
+  private sizeUnit: SizeUnit = 'base';
+  private stepSize = 0.001;
 
   constructor(
     private readonly orderBook: OrderBook,
     private readonly myOrders: MyOrderManager,
     private readonly mountEl: HTMLElement,
     private readonly onClickOrder: (price: number, side: Side, action: 'place' | 'cancel') => void
-  ) {}
+  ) { }
 
   public init(): void {
     const wrap = document.createElement('div');
@@ -54,26 +56,26 @@ export class DOMRenderer {
     wrap.append(this.glCanvas, this.uiCanvas);
     this.mountEl.appendChild(wrap);
 
-    const gl  = this.glCanvas.getContext('webgl');
+    const gl = this.glCanvas.getContext('webgl');
     const ctx = this.uiCanvas.getContext('2d');
     if (!gl || !ctx) throw new Error('missing canvas context');
-    this.gl  = gl;
+    this.gl = gl;
     this.ctx = ctx;
     this.initGL();
 
-    this.uiCanvas.addEventListener('click',      this.handleClick);
-    this.uiCanvas.addEventListener('dblclick',   this.handleDoubleClick);
-    this.uiCanvas.addEventListener('mousemove',  this.handleMouseMove);
+    this.uiCanvas.addEventListener('click', this.handleClick);
+    this.uiCanvas.addEventListener('dblclick', this.handleDoubleClick);
+    this.uiCanvas.addEventListener('mousemove', this.handleMouseMove);
     this.uiCanvas.addEventListener('mouseleave', this.handleMouseLeave);
-    this.uiCanvas.addEventListener('wheel',      this.handleWheel, { passive: false });
+    this.uiCanvas.addEventListener('wheel', this.handleWheel, { passive: false });
     window.addEventListener('keydown', this.handleKeydown);
-    this.glCanvas.addEventListener('webglcontextlost',     this.handleContextLost);
+    this.glCanvas.addEventListener('webglcontextlost', this.handleContextLost);
     this.glCanvas.addEventListener('webglcontextrestored', this.handleContextRestored);
   }
 
   private makeCanvas(): HTMLCanvasElement {
     const c = document.createElement('canvas');
-    c.width  = WIDTH;
+    c.width = WIDTH;
     c.height = HEIGHT;
     c.style.position = 'absolute';
     return c;
@@ -85,6 +87,18 @@ export class DOMRenderer {
       this.targetScrollOffset = 0;
       this.wheelAccumulator = 0;
     }
+  }
+
+  public setSizeUnit(unit: SizeUnit): void {
+    this.sizeUnit = unit;
+  }
+
+  /** stepSize 与 MarketDataSource 中 normalizeToStep 使用的值相同，用于还原真实数量。
+   *  base 模式：display = lots × stepSize（还原为原始 BTC/SEI 等）
+   *  quote 模式：display = lots × stepSize × price（转换为 USDT 等计价货币）
+   */
+  public setStepSize(stepSize: number): void {
+    if (Number.isFinite(stepSize) && stepSize > 0) this.stepSize = stepSize;
   }
 
   public recoverAfterTabSwitch(): void {
@@ -135,15 +149,15 @@ export class DOMRenderer {
 
       // Footprint cumulative bars
       const sellRatio = l.sellTraded / snap.maxTradeSize;
-      const buyRatio  = l.buyTraded  / snap.maxTradeSize;
-      rects.push({ x: COL_BID_FOOT + 100 * (1 - sellRatio), y: y + 1, w: 100 * sellRatio, h: ROW_H - 2, r: 0.2,  g: 0.43, b: 0.68, a: 0.78 });
-      rects.push({ x: COL_ASK_FOOT, y: y + 1, w: 100 * buyRatio, h: ROW_H - 2, r: 0.69, g: 0.3,  b: 0.31, a: 0.78 });
+      const buyRatio = l.buyTraded / snap.maxTradeSize;
+      rects.push({ x: COL_BID_FOOT + 100 * (1 - sellRatio), y: y + 1, w: 100 * sellRatio, h: ROW_H - 2, r: 0.2, g: 0.43, b: 0.68, a: 0.78 });
+      rects.push({ x: COL_ASK_FOOT, y: y + 1, w: 100 * buyRatio, h: ROW_H - 2, r: 0.69, g: 0.3, b: 0.31, a: 0.78 });
 
       // Taker flash animations
-      if (l.bidFlashUntil  > now) rects.push({ x: COL_BID_BOOK, y: y + 1, w: 170, h: ROW_H - 2, r: 0.42, g: 0.82, b: 1,    a: 0.28 });
-      if (l.askFlashUntil  > now) rects.push({ x: COL_ASK_BOOK, y: y + 1, w: 170, h: ROW_H - 2, r: 1,    g: 0.46, b: 0.46, a: 0.28 });
-      if (l.sellFlashUntil > now) rects.push({ x: COL_BID_FOOT, y: y + 1, w: 100, h: ROW_H - 2, r: 0.4,  g: 0.72, b: 1,    a: 0.22 });
-      if (l.buyFlashUntil  > now) rects.push({ x: COL_ASK_FOOT, y: y + 1, w: 100, h: ROW_H - 2, r: 1,    g: 0.56, b: 0.56, a: 0.22 });
+      if (l.bidFlashUntil > now) rects.push({ x: COL_BID_BOOK, y: y + 1, w: 170, h: ROW_H - 2, r: 0.42, g: 0.82, b: 1, a: 0.28 });
+      if (l.askFlashUntil > now) rects.push({ x: COL_ASK_BOOK, y: y + 1, w: 170, h: ROW_H - 2, r: 1, g: 0.46, b: 0.46, a: 0.28 });
+      if (l.sellFlashUntil > now) rects.push({ x: COL_BID_FOOT, y: y + 1, w: 100, h: ROW_H - 2, r: 0.4, g: 0.72, b: 1, a: 0.22 });
+      if (l.buyFlashUntil > now) rects.push({ x: COL_ASK_FOOT, y: y + 1, w: 100, h: ROW_H - 2, r: 1, g: 0.56, b: 0.56, a: 0.22 });
 
       // My order indicators
       if (this.myOrders.getTopOrderAt(l.price, 'bid')) rects.push({ x: COL_BID_BOOK - 5, y: y + 1, w: 5, h: ROW_H - 2, r: 1, g: 0.92, b: 0.3, a: 1 });
@@ -155,13 +169,13 @@ export class DOMRenderer {
   }
 
   private pickWindow(snap: DOMSnapshot): { windowLevels: DOMSnapshot['levels']; anchorIndex: number } {
-    const total      = snap.levels.length;
+    const total = snap.levels.length;
     const currentIdx = snap.levels.findIndex(l => l.price === snap.currentPrice);
     const baseCenter = currentIdx < 0 ? Math.floor(total / 2) : currentIdx;
-    const center     = Math.max(0, Math.min(total - 1, baseCenter + Math.round(this.displayScrollOffset)));
-    const half       = Math.floor(VISIBLE_ROWS / 2);
-    const start      = Math.max(0, Math.min(total - VISIBLE_ROWS, center - half));
-    const end        = Math.min(total, start + VISIBLE_ROWS);
+    const center = Math.max(0, Math.min(total - 1, baseCenter + Math.round(this.displayScrollOffset)));
+    const half = Math.floor(VISIBLE_ROWS / 2);
+    const start = Math.max(0, Math.min(total - VISIBLE_ROWS, center - half));
+    const end = Math.min(total, start + VISIBLE_ROWS);
     const anchorIndex = currentIdx < start || currentIdx >= end ? -1 : currentIdx - start;
     return { windowLevels: snap.levels.slice(start, end), anchorIndex };
   }
@@ -174,13 +188,15 @@ export class DOMRenderer {
     ctx.fillStyle = '#202a34';
     ctx.fillRect(0, 0, WIDTH, HEADER_H - 2);
 
+    // Column headers — show current size unit alongside the book label
+    const unitLabel = this.sizeUnit === 'base' ? '(基础)' : this.sizeUnit === 'quote' ? '(USDT)' : '(张)';
     ctx.fillStyle = '#d5e3ee';
     ctx.font = 'bold 12px sans-serif';
-    ctx.fillText('BID BOOK',  COL_BID_BOOK + 45, 24);
-    ctx.fillText('SELL CUM',  COL_BID_FOOT + 20, 24);
-    ctx.fillText('PRICE',     COL_PRICE    + 33, 24);
-    ctx.fillText('BUY CUM',   COL_ASK_FOOT + 22, 24);
-    ctx.fillText('ASK BOOK',  COL_ASK_BOOK + 45, 24);
+    ctx.fillText(`BID ${unitLabel}`, COL_BID_BOOK + 30, 24);
+    ctx.fillText('SELL CUM', COL_BID_FOOT + 20, 24);
+    ctx.fillText('PRICE', COL_PRICE + 33, 24);
+    ctx.fillText('BUY CUM', COL_ASK_FOOT + 22, 24);
+    ctx.fillText(`ASK ${unitLabel}`, COL_ASK_BOOK + 30, 24);
 
     ctx.fillStyle = '#89a2b7';
     ctx.font = '11px sans-serif';
@@ -191,26 +207,26 @@ export class DOMRenderer {
 
     ctx.font = '15px monospace';
     levels.forEach((l, i) => {
-      const y     = HEADER_H + i * ROW_H + 15;
+      const y = HEADER_H + i * ROW_H + 15;
       const myBid = this.myOrders.getTopOrderAt(l.price, 'bid');
       const myAsk = this.myOrders.getTopOrderAt(l.price, 'ask');
       const isAnchor = i === anchorIndex;
 
       ctx.fillStyle = '#d8ecfc';
-      ctx.fillText(Math.round(l.bidSize).toString(), COL_BID_BOOK + 7, y);
+      ctx.fillText(this.formatSize(l.bidSize, snap.currentPrice), COL_BID_BOOK + 7, y);
 
       ctx.fillStyle = '#c5dbf3';
-      ctx.fillText(this.formatCumValue(l.sellTraded), COL_BID_FOOT + 8, y);
+      ctx.fillText(this.formatSize(l.sellTraded, snap.currentPrice), COL_BID_FOOT + 8, y);
 
       ctx.fillStyle = isAnchor ? '#ffffff' : '#e8ecef';
       ctx.font = isAnchor ? 'bold 16px monospace' : '15px monospace';
       ctx.fillText(this.orderBook.formatPrice(l.price), COL_PRICE + 10, y);
 
       ctx.fillStyle = '#f7d4d4';
-      ctx.fillText(this.formatCumValue(l.buyTraded), COL_ASK_FOOT + 8, y);
+      ctx.fillText(this.formatSize(l.buyTraded, snap.currentPrice), COL_ASK_FOOT + 8, y);
 
       ctx.fillStyle = '#ffe2e2';
-      ctx.fillText(Math.round(l.askSize).toString(), COL_ASK_BOOK + 7, y);
+      ctx.fillText(this.formatSize(l.askSize, snap.currentPrice), COL_ASK_BOOK + 7, y);
 
       ctx.font = '11px sans-serif';
       if (myBid) { ctx.fillStyle = '#ffeb7a'; ctx.fillText(`#${Math.floor(myBid.aheadVolume) + 1}`, COL_BID_BOOK + 120, y - 2); }
@@ -238,26 +254,61 @@ export class DOMRenderer {
     );
   }
 
-  private formatCumValue(value: number): string {
-    if (!Number.isFinite(value) || value <= 0) return '0';
-    if (value >= 1000) return Math.round(value).toString();
-    if (value >= 100)  return value.toFixed(1);
-    return value.toFixed(2);
+  /**
+   * 将内部存储的 lots 值（= raw_qty / stepSize）格式化为当前选择的显示单位。
+   *
+   *  base  → lots × stepSize         (原始 BTC/SEI/…)
+   *  quote → lots × stepSize × price (USDT/…)
+   *  lots  → lots                    (最小合约张数，历史格式)
+   */
+  private formatSize(lots: number, currentPrice: number): string {
+    if (!Number.isFinite(lots) || lots <= 0) return '0';
+
+    if (this.sizeUnit === 'lots') {
+      // 历史行为：直接显示张数
+      const v = lots;
+      if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + 'M';
+      if (v >= 1_000) return Math.round(v).toString();
+      return v.toFixed(2).replace(/\.?0+$/, '');
+    }
+
+    const base = lots * this.stepSize; // 还原为原始数量 (BTC 等)
+
+    if (this.sizeUnit === 'base') {
+      if (base >= 100_000) return (base / 1_000).toFixed(0) + 'K';
+      if (base >= 10_000) return Math.round(base).toString();
+      if (base >= 1_000) return base.toFixed(0);
+      if (base >= 100) return base.toFixed(1);
+      if (base >= 10) return base.toFixed(2);
+      if (base >= 1) return base.toFixed(3);
+      if (base >= 0.1) return base.toFixed(4);
+      if (base >= 0.001) return base.toFixed(5);
+      return base.toFixed(6);
+    }
+
+    // quote (USDT)
+    const quote = base * currentPrice;
+    if (quote >= 1_000_000_000) return (quote / 1_000_000).toFixed(0) + 'M';
+    if (quote >= 1_000_000) return (quote / 1_000_000).toFixed(2) + 'M';
+    if (quote >= 100_000) return (quote / 1_000).toFixed(0) + 'K';
+    if (quote >= 10_000) return Math.round(quote).toString();
+    if (quote >= 1_000) return quote.toFixed(0);
+    return quote.toFixed(1);
   }
 
   private drawRects(rects: RectDraw[]): void {
     if (this.isContextLost || this.gl.isContextLost()) return;
 
     const data: number[] = [];
-    const cx = (x: number) => (x / WIDTH)  * 2 - 1;
+    const cx = (x: number) => (x / WIDTH) * 2 - 1;
     const cy = (y: number) => 1 - (y / HEIGHT) * 2;
 
     for (const { x, y, w, h, r, g, b, a } of rects) {
       const x1 = cx(x), y1 = cy(y), x2 = cx(x + w), y2 = cy(y + h);
       // Two triangles per rect (6 vertices × 6 floats)
       data.push(
-        x1, y1, r, g, b, a,  x2, y1, r, g, b, a,  x1, y2, r, g, b, a,
-        x1, y2, r, g, b, a,  x2, y1, r, g, b, a,  x2, y2, r, g, b, a
+        x1, y1, r, g, b, a, x2, y1, r, g, b, a, x1, y2, r, g, b, a,
+        x1, y2, r, g, b, a, x2, y1, r, g, b, a, x2, y2, r, g, b, a
       );
     }
 
@@ -271,7 +322,7 @@ export class DOMRenderer {
 
     const stride = 6 * Float32Array.BYTES_PER_ELEMENT;
     gl.enableVertexAttribArray(this.posLoc);
-    gl.vertexAttribPointer(this.posLoc,   2, gl.FLOAT, false, stride, 0);
+    gl.vertexAttribPointer(this.posLoc, 2, gl.FLOAT, false, stride, 0);
     gl.enableVertexAttribArray(this.colorLoc);
     gl.vertexAttribPointer(this.colorLoc, 4, gl.FLOAT, false, stride, 2 * Float32Array.BYTES_PER_ELEMENT);
     gl.drawArrays(gl.TRIANGLES, 0, data.length / 6);
@@ -291,10 +342,10 @@ export class DOMRenderer {
     `;
     const vs = this.compileShader(this.gl.VERTEX_SHADER, vert);
     const fs = this.compileShader(this.gl.FRAGMENT_SHADER, frag);
-    this.program  = this.linkProgram(vs, fs);
-    this.posLoc   = this.gl.getAttribLocation(this.program, 'a_pos');
+    this.program = this.linkProgram(vs, fs);
+    this.posLoc = this.gl.getAttribLocation(this.program, 'a_pos');
     this.colorLoc = this.gl.getAttribLocation(this.program, 'a_col');
-    this.buffer   = this.gl.createBuffer() as WebGLBuffer;
+    this.buffer = this.gl.createBuffer() as WebGLBuffer;
   }
 
   private compileShader(type: number, src: string): WebGLShader {
@@ -317,7 +368,7 @@ export class DOMRenderer {
   }
 
   private resetScroll(): void {
-    this.targetScrollOffset  = 0;
+    this.targetScrollOffset = 0;
     this.wheelAccumulator = 0;
   }
 
@@ -337,13 +388,13 @@ export class DOMRenderer {
   };
 
   private handleMouseMove = (ev: MouseEvent): void => {
-    const y   = ev.clientY - this.uiCanvas.getBoundingClientRect().top;
+    const y = ev.clientY - this.uiCanvas.getBoundingClientRect().top;
     const row = Math.floor((y - HEADER_H) / ROW_H);
     this.hoverRow = row >= 0 && row < VISIBLE_ROWS ? row : -1;
   };
 
-  private handleMouseLeave  = (): void => { this.hoverRow = -1; };
-  private handleDoubleClick = (): void  => { this.resetScroll(); };
+  private handleMouseLeave = (): void => { this.hoverRow = -1; };
+  private handleDoubleClick = (): void => { this.resetScroll(); };
 
   private handleKeydown = (ev: KeyboardEvent): void => {
     const tag = (ev.target as HTMLElement | null)?.tagName;
@@ -351,15 +402,15 @@ export class DOMRenderer {
 
     if (ev.key === 'Home') { this.resetScroll(); ev.preventDefault(); return; }
     if (this.autoFocusLocked) return;
-    if (ev.key === 'ArrowUp')   { this.adjustScroll(-1); ev.preventDefault(); }
-    if (ev.key === 'ArrowDown') { this.adjustScroll(1);  ev.preventDefault(); }
+    if (ev.key === 'ArrowUp') { this.adjustScroll(-1); ev.preventDefault(); }
+    if (ev.key === 'ArrowDown') { this.adjustScroll(1); ev.preventDefault(); }
   };
 
   private handleClick = (ev: MouseEvent): void => {
     const rect = this.uiCanvas.getBoundingClientRect();
-    const x    = ev.clientX - rect.left;
-    const y    = ev.clientY - rect.top;
-    const row  = Math.floor((y - HEADER_H) / ROW_H);
+    const x = ev.clientX - rect.left;
+    const y = ev.clientY - rect.top;
+    const row = Math.floor((y - HEADER_H) / ROW_H);
     const { windowLevels } = this.pickWindow(this.orderBook.getSnapshot());
     if (row < 0 || row >= windowLevels.length) return;
 

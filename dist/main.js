@@ -52,12 +52,13 @@ function bootstrap() {
     let orderSize = 1;
     let renderIntervalMs = 0;
     let autoFocusLocked = true;
+    const rawUnit = params.get('sizeUnit');
+    let sizeUnit = (rawUnit === 'quote' || rawUnit === 'lots') ? rawUnit : 'base';
     let panelDirty = true;
     let lastOrdersVersion = -1;
     let lastRenderAt = 0;
     const applyEvent = (event) => {
         book.applyEvent(event);
-        latestPriceEl.textContent = book.formatPrice(book.getSnapshot().currentPrice);
         const fills = mine.onBookEvent(event);
         fills.forEach(showFillToast);
         if (mine.getVersion() !== lastOrdersVersion)
@@ -116,6 +117,14 @@ function bootstrap() {
         </select>
       </div>
       <div class="refresh-control">
+        <label>数量单位</label>
+        <div class="unit-btn-group">
+          <button class="unit-btn ${sizeUnit === 'base' ? 'active' : ''}" data-unit="base">基础货币</button>
+          <button class="unit-btn ${sizeUnit === 'quote' ? 'active' : ''}" data-unit="quote">USDT</button>
+          <button class="unit-btn ${sizeUnit === 'lots' ? 'active' : ''}" data-unit="lots">张</button>
+        </div>
+      </div>
+      <div class="refresh-control">
         <label for="focus-lock-mode">价格自动聚焦</label>
         <select id="focus-lock-mode" class="refresh-select">
           <option value="locked" ${autoFocusLocked ? 'selected' : ''}>锁定跟随买一卖一</option>
@@ -166,6 +175,7 @@ function bootstrap() {
             next.set('market', sel('market-mode'));
         if (inp('symbol-input'))
             next.set('symbol', inp('symbol-input'));
+        next.set('sizeUnit', sizeUnit); // persist across reload
         window.location.search = next.toString();
     };
     ordersPanel.addEventListener('change', (ev) => {
@@ -203,6 +213,13 @@ function bootstrap() {
             panelDirty = true;
             return;
         }
+        const unitBtn = target.closest('.unit-btn');
+        if (unitBtn?.dataset.unit) {
+            sizeUnit = unitBtn.dataset.unit;
+            renderer.setSizeUnit(sizeUnit);
+            panelDirty = true;
+            return;
+        }
         const cancelBtn = target.closest('.cancel-btn');
         if (cancelBtn?.dataset.orderId)
             cancelOrderById(cancelBtn.dataset.orderId);
@@ -222,6 +239,8 @@ function bootstrap() {
     });
     renderer.init();
     renderer.setAutoFocusLocked(autoFocusLocked);
+    renderer.setStepSize(stepSize);
+    renderer.setSizeUnit(sizeUnit);
     const recoverRenderer = () => {
         renderer.recoverAfterTabSwitch();
         panelDirty = true;
@@ -230,15 +249,28 @@ function bootstrap() {
         recoverRenderer(); });
     window.addEventListener('pageshow', recoverRenderer);
     const marketDataSource = isRealtime
-        ? createRealtimeSource(book, onMarketEvent, { exchange, market, symbol, tickSize, stepSize, autoDetectTick })
+        ? createRealtimeSource(book, onMarketEvent, {
+            exchange, market, symbol, tickSize, stepSize, autoDetectTick,
+            onStepSizeDetected: (detectedStep) => {
+                renderer.setStepSize(detectedStep);
+                panelDirty = true;
+            },
+        })
         : new MockDataGenerator(book, 70, onMarketEvent, { addWeight: 0.42, cancelWeight: 0.25, tradeWeight: 0.33, burstChance: 0.32 });
     marketDataSource.start();
     console.info(`[MarketData] source started: ${marketDataSource.getName()}`);
+    let lastDisplayedPrice = '';
     const loop = () => {
         const now = performance.now();
         if (renderIntervalMs === 0 || now - lastRenderAt >= renderIntervalMs) {
             renderer.render();
             lastRenderAt = now;
+            // Always keep the price display in sync with the book — not just on trade events
+            const formatted = book.formatPrice(book.getSnapshot().currentPrice);
+            if (formatted !== lastDisplayedPrice) {
+                latestPriceEl.textContent = formatted;
+                lastDisplayedPrice = formatted;
+            }
         }
         if (panelDirty)
             renderOrdersPanel();

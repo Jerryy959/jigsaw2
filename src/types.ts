@@ -1,5 +1,13 @@
 export type Side = 'bid' | 'ask';
 
+/**
+ * 数量显示单位
+ *   base  — 基础货币原始数量，与 Binance 网页默认显示一致 (e.g. BTC, SEI)
+ *   quote — 计价货币价值 = 原始数量 × 当前价格 (e.g. USDT)，与 Binance 切换到 USDT 模式一致
+ *   lots  — 最小合约张数 = 原始数量 / stepSize（历史显示方式，数字偏大）
+ */
+export type SizeUnit = 'base' | 'quote' | 'lots';
+
 export interface BookEvent {
   type: 'add' | 'cancel' | 'trade';
   side: Side;
