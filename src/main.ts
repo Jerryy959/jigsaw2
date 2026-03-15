@@ -6,7 +6,8 @@ import { MockMatchingEngine } from './MockMatchingEngine.js';
 import { OrderBook } from './OrderBook.js';
 import type { BookEvent, FillNotice, MyOrder, Side } from './types.js';
 
-const DEFAULT_REALTIME_TICK_SIZE = 0.0001;
+const DEFAULT_REALTIME_TICK_SIZE = 0.1; // For BTCUSDT Futures
+const DEFAULT_REALTIME_STEP_SIZE = 0.001; // For BTCUSDT Futures
 const DEFAULT_MOCK_TICK_SIZE = 0.25;
 
 function bootstrap(): void {
@@ -25,11 +26,32 @@ function bootstrap(): void {
   const market = params.get('market') ?? 'spot';
   const symbol = params.get('symbol') ?? resolveDefaultSymbol(exchange === 'bybit' ? 'bybit' : 'binance', market === 'futures' ? 'futures' : 'spot');
 
+  const isBTCUSDT = symbol.toLowerCase() === 'btcusdt';
+  
+  // Set defaults based on market
+  let defaultTick = DEFAULT_REALTIME_TICK_SIZE;
+  let defaultStep = DEFAULT_REALTIME_STEP_SIZE;
+  
+  if (isBTCUSDT) {
+    if (market === 'spot') {
+      defaultTick = 0.01;
+      defaultStep = 0.00001;
+    } else {
+      defaultTick = 0.1;
+      defaultStep = 0.001;
+    }
+  }
+
   const randomSeededLiquidity = sourceMode === 'mock';
-  const tickSize = Number(params.get('tickSize') ?? (sourceMode === 'realtime' ? DEFAULT_REALTIME_TICK_SIZE : DEFAULT_MOCK_TICK_SIZE));
-  const normalizedTick = Number.isFinite(tickSize) && tickSize > 0 ? tickSize : sourceMode === 'realtime' ? DEFAULT_REALTIME_TICK_SIZE : DEFAULT_MOCK_TICK_SIZE;
+  const tickSize = Number(params.get('tickSize') ?? (sourceMode === 'realtime' ? defaultTick : DEFAULT_MOCK_TICK_SIZE));
+  const normalizedTick = Number.isFinite(tickSize) && tickSize > 0 ? tickSize : sourceMode === 'realtime' ? defaultTick : DEFAULT_MOCK_TICK_SIZE;
+  
+  const stepSize = Number(params.get('stepSize') ?? (sourceMode === 'realtime' ? defaultStep : 1));
+  const normalizedStep = Number.isFinite(stepSize) && stepSize > 0 ? stepSize : defaultStep;
+
   const centerPrice = Number(params.get('centerPrice') ?? (sourceMode === 'realtime' ? 1 : 3856));
   const normalizedCenter = Number.isFinite(centerPrice) && centerPrice > 0 ? centerPrice : sourceMode === 'realtime' ? 1 : 3856;
+  
   const book = new OrderBook(normalizedCenter, normalizedTick, 160, randomSeededLiquidity);
   const mine = new MyOrderManager(book);
   latestPriceEl.textContent = book.formatPrice(normalizedCenter);
@@ -303,18 +325,6 @@ function bootstrap(): void {
     panelDirty = true;
   });
 
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      renderer.recoverAfterTabSwitch();
-      panelDirty = true;
-    }
-  });
-
-  window.addEventListener('pageshow', () => {
-    renderer.recoverAfterTabSwitch();
-    panelDirty = true;
-  });
-
   const marketDataSource =
     sourceMode === 'realtime'
       ? createRealtimeSource(book, onMarketEvent, {
@@ -322,6 +332,7 @@ function bootstrap(): void {
           market: market === 'futures' ? 'futures' : 'spot',
           symbol,
           tickSize: normalizedTick,
+          stepSize: normalizedStep,
         })
       : new MockDataGenerator(book, 70, onMarketEvent, {
           addWeight: 0.42,
