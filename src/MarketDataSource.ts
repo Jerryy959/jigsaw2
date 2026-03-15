@@ -33,11 +33,6 @@ interface BinanceDepthMessage {
   a?: Array<[string, string]>;
 }
 
-interface BinanceTradeMessage {
-  p?: string;
-  q?: string;
-  m?: boolean;
-}
 
 interface BybitOrderBookMessage {
   topic?: string;
@@ -343,7 +338,6 @@ export class BinanceMarketDataSource extends BaseRealtimeSource {
   private processBuffer(): void {
     if (this.lastUpdateId === -1) return;
 
-    const remaining = [];
     for (const msg of this.buffer) {
       // For Spot: The first processed event should have U <= lastUpdateId+1 AND u >= lastUpdateId+1
       // For Futures: The first processed event should have U <= lastUpdateId AND u >= lastUpdateId
