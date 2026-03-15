@@ -269,6 +269,16 @@ function bootstrap() {
         renderer.recoverAfterTabSwitch();
         panelDirty = true;
     });
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            renderer.recoverAfterTabSwitch();
+            panelDirty = true;
+        }
+    });
+    window.addEventListener('pageshow', () => {
+        renderer.recoverAfterTabSwitch();
+        panelDirty = true;
+    });
     const marketDataSource = sourceMode === 'realtime'
         ? createRealtimeSource(book, onMarketEvent, {
             exchange: exchange === 'bybit' ? 'bybit' : 'binance',
